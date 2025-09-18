@@ -7,8 +7,6 @@ from nidaqmx.constants import AcquisitionType, READ_ALL_AVAILABLE
 class zscan:
 
     def __init__(self, zlim: float, zsamp: int) -> None:
-        self.ready_to_measure = False
-        self.measurement_complete = False
         self.zlim = zlim
         self.zsamp = zsamp
         self.zpos = np.linspace(-self.zlim, self.zlim, zsamp)
@@ -16,4 +14,5 @@ class zscan:
 
     def collect(self) -> npt.NDArray:
         measurements = np.zeros(shape=(2, self.zsamp))
+        # Fill in with expression for collecting values
         return measurements
