@@ -4,7 +4,7 @@ import numpy.typing as npt
 
 from nidaqmx.constants import AcquisitionType, READ_ALL_AVAILABLE
 
-class zscan:
+class Experiment:
 
     def __init__(self, zlim: float, zsamp: int) -> None:
         self.zlim = zlim
