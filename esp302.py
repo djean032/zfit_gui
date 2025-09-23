@@ -15,7 +15,6 @@ BUFFER_SIZE = 80
 
 
 class ESP302:
-
     def __init__(self):
         self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.s.connect((TCP_IP, TCP_PORT))

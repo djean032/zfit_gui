@@ -1,13 +1,13 @@
 import sys
+
+from colors import Color
 from PySide6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
     QHBoxLayout,
+    QMainWindow,
     QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtGui import QPalette, QColor
-from colors import Color
 
 
 class MainWindow(QMainWindow):
