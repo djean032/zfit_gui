@@ -26,32 +26,38 @@ class ESP302:
         self.s.send(message)
         return self.s.recv(BUFFER_SIZE).decode().strip().split(",")[1]
 
-    def getPosition(self, motor):
-        message = (str(motor) + "TP?").encode()
-        print("getPosition :", self.sendMessage(message))
+    def getPosition(self, axis: int) -> str:
+        message = (str(axis) + "TP?").encode()
+        current_pos = self.sendMessage(message)
+        print("getPosition :", current_pos)
+        return current_pos
 
-    def moveRelative(self, motor, pas):
-        message = (str(motor) + "PR" + str(pas)).encode()
+    def moveRelative(self, axis: int, pas):
+        message = (str(axis) + "PR" + str(pas)).encode()
         self.sendMessage(message)
 
-    def moveAbsolute(self, motor, pos):
-        message = (str(motor) + "PA" + str(pos)).encode()
+    def moveAbsolute(self, axis: int, pos):
+        message = (str(axis) + "PA" + str(pos)).encode()
         self.sendMessage(message)
 
-    def getMaxVelocity(self, motor):
-        message = (str(motor) + "VU?").encode()
+    def getMaxVelocity(self, axis: int):
+        message = (str(axis) + "VU?").encode()
         print("getMaxVelocity :", self.sendMessage(message))
 
-    def getVelocity(self, motor):
-        message = (str(motor) + "VA?").encode()
+    def getVelocity(self, axis: int):
+        message = (str(axis) + "VA?").encode()
         print("getVelocity :", self.sendMessage(message))
 
-    def setVelocity(self, motor, velocity):
-        message = (str(motor) + "VA" + str(velocity)).encode()
+    def setVelocity(self, axis: int, velocity):
+        message = (str(axis) + "VA" + str(velocity)).encode()
         self.sendMessage(message)
 
-    def isMoving(self, motor):
-        pass
+    def queryAtPosition(self, axis: int, requested_pos) -> bool:
+        current_pos = self.getPosition(axis)
+        if current_pos == str(requested_pos):
+            return True
+        else:
+            return False
 
 
 def main():

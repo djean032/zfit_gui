@@ -52,10 +52,11 @@ class Experiment:
     def step(self, pos: float) -> int:
         try:
             self.stage.moveAbsolute(self.zaxis, pos)
-
         except Exception as e:
             print(f"An error with the stage has occurred: {e}")
             return 1
+        while not self.stage.queryAtPosition(self.zaxis, pos):
+            continue
 
         return 0
 
