@@ -1,0 +1,23 @@
+[laser]
+#laser parameters
+lambda_laser = "None"
+energy_pulse = "None"
+W_o = "Test1"
+mu_squared = "None"
+
+[sample]
+#sample parameters
+thickness = "None" #cm
+T_surf = "None"
+concentration = "None"
+sig_g = "None"
+mol_abs = "None"
+sig_s = "None"
+sig_t = "None"
+sig_s2 = "None" 
+sig_t2 = "None"
+t_10 = "None"
+t_13 = "None"
+t_21 = "None"
+t_30 = "None"
+t_43 = "None"
