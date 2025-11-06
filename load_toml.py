@@ -22,7 +22,7 @@ def read_toml_config(filename):
         print(f"Error parsing TOML file: {e}")
         return None
 
-
+#Change where it checks the value if a float 
 def parse_value(value):
     """
     Convert string "None" to Python None, otherwise return the value.
