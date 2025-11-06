@@ -116,3 +116,8 @@ class Experiment:
         # Close the connection to the stage
         stage.close()
         print("Staged connection closed")
+
+
+if __name__ == "main":
+    # insert collection code
+    pass
