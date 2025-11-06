@@ -8,8 +8,8 @@ mu_squared = "None"
 [sample]
 #sample parameters
 thickness = "None" #cm
-T_surf = "None"
-concentration = "None"
+T_surf = "None" 
+concentration = "None" #Molarity
 sig_g = "None"
 mol_abs = "None"
 sig_s = "None"
