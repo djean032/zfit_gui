@@ -1,13 +1,12 @@
 import sys
 
+from colors import Color
 from PySide6.QtWidgets import (
-    QGridLayout,
     QApplication,
+    QHBoxLayout,
+    QMainWindow,
+    QVBoxLayout,
     QWidget,
-    QLineEdit,
-    QLabel,
-    QGroupBox,
-    QComboBox,
 )
 
 
@@ -47,8 +46,28 @@ class ConfigWidget(QWidget):
         self.setLayout(layout)
 
 
-if __name__ == "__main__":
-    app = QApplication([])
-    window = ConfigWidget(8, 3)
-    window.show()
-    app.exec()
+        layout1.setContentsMargins(0, 0, 0, 0)
+        layout1.setSpacing(20)
+
+        layout2.addWidget(Color("red"))
+        layout2.addWidget(Color("yellow"))
+        layout2.addWidget(Color("purple"))
+
+        layout1.addLayout(layout2)
+
+        layout1.addWidget(Color("green"))
+
+        layout3.addWidget(Color("red"))
+        layout3.addWidget(Color("purple"))
+
+        layout1.addLayout(layout3)
+
+        widget = QWidget()
+        widget.setLayout(layout1)
+        self.setCentralWidget(widget)
+
+
+app = QApplication(sys.argv)
+window = MainWindow()
+window.show()
+app.exec()
