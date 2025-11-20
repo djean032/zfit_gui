@@ -1,17 +1,20 @@
 import sys
 
-from colors import Color
 from PySide6.QtWidgets import (
     QApplication,
+    QGridLayout,
     QHBoxLayout,
-    QMainWindow,
+    QTreeWidget,
     QVBoxLayout,
+    QLabel,
+    QComboBox,
+    QLineEdit,
     QWidget,
 )
 
 
-class ConfigWidget(QWidget):
-    def __init__(self, rows, cols):
+class MainWindow(QWidget):
+    def __init__(self):
         super().__init__()
         self.labels = {
             "Wavelength": "532",
@@ -35,36 +38,22 @@ class ConfigWidget(QWidget):
         }
 
         self.setWindowTitle("Zfit")
-        layout = QGridLayout()
-        for key, value in self.labels:
-            group = QGroupBox(key)
-            combo = QComboBox()
-            label = QLabel(key)
-            edit = QLineEdit()
-            edit.placeholderText(value)
-            layout = QGridLayout()
-        self.setLayout(layout)
-
-
-        layout1.setContentsMargins(0, 0, 0, 0)
-        layout1.setSpacing(20)
-
-        layout2.addWidget(Color("red"))
-        layout2.addWidget(Color("yellow"))
-        layout2.addWidget(Color("purple"))
-
-        layout1.addLayout(layout2)
-
-        layout1.addWidget(Color("green"))
-
-        layout3.addWidget(Color("red"))
-        layout3.addWidget(Color("purple"))
-
-        layout1.addLayout(layout3)
-
-        widget = QWidget()
-        widget.setLayout(layout1)
-        self.setCentralWidget(widget)
+        vertical_layout = QVBoxLayout()
+        vertical_layout.setSpacing(2)
+        horizontal_layout1 = QHBoxLayout()
+        horizontal_layout2 = QHBoxLayout()
+        label1 = QLabel("Wavelength (nm)")
+        lineedit1 = QLineEdit(placeholderText="532")
+        horizontal_layout1.addWidget(label1)
+        horizontal_layout1.addWidget(lineedit1)
+        label2 = QLabel("Concentration (M)")
+        lineedit2 = QLineEdit(placeholderText="1.3e-3")
+        horizontal_layout2.addWidget(label2)
+        horizontal_layout2.addWidget(lineedit2)
+        vertical_layout.addLayout(horizontal_layout1)
+        vertical_layout.addLayout(horizontal_layout2)
+        self.setLayout(vertical_layout)
+        self.show()
 
 
 app = QApplication(sys.argv)
