@@ -129,10 +129,10 @@ class ParameterInputGUI(QMainWindow):
         # Buttons
         button_layout = QHBoxLayout()
 
-        export_btn = QPushButton("Export to TOML")
+        export_btn = QPushButton("Save")
         export_btn.clicked.connect(self.export_to_toml)
 
-        load_btn = QPushButton("Load from TOML")
+        load_btn = QPushButton("Load")
         load_btn.clicked.connect(self.load_from_toml)
 
         clear_btn = QPushButton("Clear All")
@@ -149,11 +149,11 @@ class ParameterInputGUI(QMainWindow):
         params = {"laser": {}, "sample": {}}
 
         for key, input_field in self.laser_inputs.items():
-            value = input_field.text().strip()
+            value = float(input_field.text().strip())
             params["laser"][key] = value if value else "None"
 
         for key, input_field in self.sample_inputs.items():
-            value = input_field.text().strip()
+            value = float(input_field.text().strip())
             params["sample"][key] = value if value else "None"
 
         return params
