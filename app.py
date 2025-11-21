@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QFileDialog,
     QMessageBox,
+    QTabWidget
 )
 from PySide6.QtCore import QRegularExpression, Qt
 import toml
@@ -62,59 +63,76 @@ class ParameterInputGUI(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
+        #create tab widget
+        self.tab_widget = QTabWidget()
+
+        #create three tabs
+        self.config_tab = self.create_configuration_tab()
+        self.data_tab = self.create_data_collection_tab()
+        self.fitting_tab = self.create_fitting_tab()
+
+        #add tabs to tab widget
+        self.tab_widget.addTab(self.config_tab, "Configuration")
+        self.tab_widget.addTab(self.data_tab, "Data Collection")
+        self.tab_widget.addTab(self.fitting_tab, "Fitting")
+        main_layout.addWidget(self.tab_widget)
+
+
+    def create_configuration_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
         # Laser Parameters Group
         laser_group = QGroupBox("Laser Parameters")
         laser_layout = QGridLayout()
-
+        
         self.laser_inputs = {}
         laser_labels = {
-            "lambda_laser": "Laser Wavelength (m):",
-            "energy_pulse": "Pulse Energy (J):",
-            "W_o": "Beam Waist (m):",
-            "mu_squared": "M<sup>2</sup>:",
+            "lambda_laser": "Lambda Laser:",
+            "energy_pulse": "Energy Pulse:",
+            "W_o": "W_o:",
+            "mu_squared": "Mu Squared:"
         }
-
+        
         row = 0
         for key, label_text in laser_labels.items():
             label = QLabel(label_text)
             input_field = QLineEdit(self.laser_params[key])
-            input_field.setValidator(input_validation_sci())
             self.laser_inputs[key] = input_field
             laser_layout.addWidget(label, row, 0)
             laser_layout.addWidget(input_field, row, 1)
             row += 1
-
+            
         laser_group.setLayout(laser_layout)
-        main_layout.addWidget(laser_group)
-
+        layout.addWidget(laser_group)
+        
         # Sample Parameters Group
         sample_group = QGroupBox("Sample Parameters")
         sample_layout = QGridLayout()
-
+        
         self.sample_inputs = {}
         sample_labels = {
             "thickness": "Thickness (cm):",
-            "T_surf": "Surface Transimittance:",
+            "T_surf": "T_surf:",
             "concentration": "Concentration (Molarity):",
             "sig_g": "Sig_g:",
             "mol_abs": "Mol_abs:",
-            "sig_s": "\u03c3<html><sub>S01</sub></html>:",
-            "sig_t": "\u03c3<html><sub>T01</sub></html>:",
-            "sig_s2": "\u03c3<html><sub>S12</sub></html>:",
-            "sig_t2": "\u03c3<html><sub>T12</sub></html>:",
-            "t_10": "\u03c4<html><sub>10</sub></html>:",
-            "t_13": "\u03c4<html><sub>13</sub></html>:",
-            "t_21": "\u03c4<html><sub>21</sub></html>:",
-            "t_30": "\u03c4<html><sub>30</sub></html>:",
-            "t_43": "\u03c4<html><sub>43</sub></html>:",
+            "sig_s": "Sig_s:",
+            "sig_t": "Sig_t:",
+            "sig_s2": "Sig_s2:",
+            "sig_t2": "Sig_t2:",
+            "t_10": "t_10:",
+            "t_13": "t_13:",
+            "t_21": "t_21:",
+            "t_30": "t_30:",
+            "t_43": "t_43:"
         }
-
+        
         row = 0
         col = 0
         for key, label_text in sample_labels.items():
             label = QLabel(label_text)
             input_field = QLineEdit(self.sample_params[key])
-            input_field.setValidator(input_validation_sci())
             self.sample_inputs[key] = input_field
             sample_layout.addWidget(label, row, col)
             sample_layout.addWidget(input_field, row, col + 1)
@@ -122,27 +140,48 @@ class ParameterInputGUI(QMainWindow):
             if row > 6:  # Split into two columns for better layout
                 row = 0
                 col += 2
-
+                
         sample_group.setLayout(sample_layout)
-        main_layout.addWidget(sample_group)
-
+        layout.addWidget(sample_group)
+        
         # Buttons
         button_layout = QHBoxLayout()
-
+        
         export_btn = QPushButton("Export to TOML")
         export_btn.clicked.connect(self.export_to_toml)
-
+        
         load_btn = QPushButton("Load from TOML")
         load_btn.clicked.connect(self.load_from_toml)
-
+        
         clear_btn = QPushButton("Clear All")
         clear_btn.clicked.connect(self.clear_all)
-
+        
         button_layout.addWidget(load_btn)
         button_layout.addWidget(clear_btn)
         button_layout.addWidget(export_btn)
+        
+        layout.addLayout(button_layout)
+        layout.addStretch()
+        
+        return tab
 
-        main_layout.addLayout(button_layout)
+    def create_data_collection_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        label = QLabel("Data Collection Settings will go here.")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        return tab
+    
+    
+    def create_fitting_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        label = QLabel("Fitting Settings will go here.")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        return tab
+
 
     def get_current_parameters(self):
         """Collect current values from input fields"""
