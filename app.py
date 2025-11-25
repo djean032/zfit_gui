@@ -13,10 +13,17 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QFileDialog,
     QMessageBox,
-    QTabWidget
+    QTabWidget,
+    QComboBox, 
+    QCheckBox
 )
-from PySide6.QtCore import QRegularExpression, Qt
+from PySide6.QtCore import QRegularExpression, Qt, QTimer
 import toml
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
 
 
 def input_validation_sci():
@@ -25,7 +32,14 @@ def input_validation_sci():
     return QRegularExpressionValidator(regex)
 
 
-class ParameterInputGUI(QMainWindow):
+class MplCanvas(FigureCanvas):
+    """Matplotlib canvas widget"""
+    def __init__(self, parent=None, width=5, height=4, dpi=100):
+        fig = Figure(figsize=(width, height), dpi=dpi)
+        self.axes = fig.add_subplot(111)
+        super().__init__(fig)
+
+class GUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Laser & Sample Parameter Input")
@@ -57,6 +71,13 @@ class ParameterInputGUI(QMainWindow):
         }
 
         self.setup_ui()
+
+        # Initialize dynamic plotting variables
+        self.csv_file_path = None
+        self.auto_refresh_enabled = False
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self.reload_and_plot)
+
 
     def setup_ui(self):
         central_widget = QWidget()
@@ -177,9 +198,89 @@ class ParameterInputGUI(QMainWindow):
     def create_fitting_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        label = QLabel("Fitting Settings will go here.")
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
+        
+        # Controls section
+        controls_group = QGroupBox("Data Collection Controls")
+        controls_layout = QVBoxLayout()
+        
+        # File loading row
+        file_row = QHBoxLayout()
+        load_csv_btn = QPushButton("Load CSV Data")
+        load_csv_btn.clicked.connect(self.load_csv_data)
+        
+        self.file_label = QLabel("No file loaded")
+        self.file_label.setStyleSheet("color: gray;")
+        
+        file_row.addWidget(load_csv_btn)
+        file_row.addWidget(self.file_label)
+        file_row.addStretch()
+        
+        # Auto-refresh controls
+        refresh_row = QHBoxLayout()
+        
+        self.auto_refresh_checkbox = QCheckBox("Auto-refresh")
+        self.auto_refresh_checkbox.stateChanged.connect(self.toggle_auto_refresh)
+        
+        refresh_label = QLabel("Interval (ms):")
+        self.refresh_interval_input = QLineEdit("1000")
+        self.refresh_interval_input.setMaximumWidth(80)
+        self.refresh_interval_input.textChanged.connect(self.update_refresh_interval)
+        
+        manual_refresh_btn = QPushButton("Refresh Now")
+        manual_refresh_btn.clicked.connect(self.reload_and_plot)
+        
+        refresh_row.addWidget(self.auto_refresh_checkbox)
+        refresh_row.addWidget(refresh_label)
+        refresh_row.addWidget(self.refresh_interval_input)
+        refresh_row.addWidget(manual_refresh_btn)
+        refresh_row.addStretch()
+        
+        controls_layout.addLayout(file_row)
+        controls_layout.addLayout(refresh_row)
+        
+        controls_group.setLayout(controls_layout)
+        layout.addWidget(controls_group)
+        
+        # Graph section
+        graph_group = QGroupBox("Data Visualization")
+        graph_layout = QVBoxLayout()
+        
+        # Create matplotlib canvas
+        self.canvas = MplCanvas(self, width=8, height=5, dpi=100)
+        
+        # Add navigation toolbar for zoom, pan, etc.
+        self.toolbar = NavigationToolbar(self.canvas, tab)
+        
+        graph_layout.addWidget(self.toolbar)
+        graph_layout.addWidget(self.canvas)
+        
+        # Graph controls
+        graph_controls = QHBoxLayout()
+        
+        # Use combo boxes instead of text inputs for easier column selection
+        self.x_column_combo = QComboBox()
+        self.x_column_combo.currentTextChanged.connect(self.update_plot)
+        
+        self.y_column_combo = QComboBox()
+        self.y_column_combo.currentTextChanged.connect(self.update_plot)
+        
+        clear_plot_btn = QPushButton("Clear Plot")
+        clear_plot_btn.clicked.connect(self.clear_plot)
+        
+        graph_controls.addWidget(QLabel("X Axis:"))
+        graph_controls.addWidget(self.x_column_combo)
+        graph_controls.addWidget(QLabel("Y Axis:"))
+        graph_controls.addWidget(self.y_column_combo)
+        graph_controls.addWidget(clear_plot_btn)
+        
+        graph_layout.addLayout(graph_controls)
+        
+        graph_group.setLayout(graph_layout)
+        layout.addWidget(graph_group)
+        
+        # Store loaded data
+        self.loaded_data = None
+        
         return tab
 
 
@@ -251,9 +352,10 @@ class ParameterInputGUI(QMainWindow):
             input_field.clear()
 
 
+
 def main():
     app = QApplication(sys.argv)
-    window = ParameterInputGUI()
+    window = GUI()
     window.show()
     sys.exit(app.exec())
 
