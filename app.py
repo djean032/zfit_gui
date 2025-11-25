@@ -289,11 +289,11 @@ class GUI(QMainWindow):
         params = {"laser": {}, "sample": {}}
 
         for key, input_field in self.laser_inputs.items():
-            value = input_field.text().strip()
+            value = float(input_field.text().strip())
             params["laser"][key] = value if value else "None"
 
         for key, input_field in self.sample_inputs.items():
-            value = input_field.text().strip()
+            value = float(input_field.text().strip())
             params["sample"][key] = value if value else "None"
 
         return params

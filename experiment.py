@@ -1,10 +1,8 @@
 import time
 
-import jax
-import jax.numpy as jnp
+import numpy as np
+
 import nidaqmx
-import numpy as onp
-from jaxtyping import Array
 
 from esp302 import ESP302
 
@@ -15,18 +13,19 @@ class Experiment:
     def __init__(self, zlim: float, zsamp: int, samp_per_pos: int = 4) -> None:
         self.zlim: float = zlim # maximum z-axis limit in mm
         self.zsamp: int = zsamp # of samples along z-axis
-        self.zpos: Array = jnp.linspace(-self.zlim, self.zlim, zsamp) # z-axis positions
+        self.zpos = np.linspace(-self.zlim, self.zlim, zsamp) # z-axis positions
         self.samp_per_pos: int = samp_per_pos # samples per position
         self.stage: ESP302 = ESP302() # initialize stage
         self.zaxis: int = 3 # z-axis identifier
+        self.measurements = np.zeros(shape=(self.zsamp, 3))
 
 
-    def collect(self) -> Array:
+    def collect(self) -> None:
         """
         Collect measurements across the z-axis positions.
         Returns: Array of measurements with shape (zsamp, 3) where each row contains [position, ai0, ai1]
         """
-        measurements: Array = jnp.zeros(shape=(self.zsamp, 3))
+        self.measurements[:] = 0
         with nidaqmx.Task() as task:
             task.ai_channels.add_ai_voltage_chan(
                 "Dev1/ai0", min_val=-10.0, max_val=10.0
@@ -45,17 +44,11 @@ class Experiment:
                         print(
                             f"Warning: Measurements at position {position} mm are out of expected range."
                         )
-                    measurements.at[index, :].set(
-                        [
-                            position,
-                            jnp.mean(jnp.array(tmp_val[0])),
-                            jnp.mean(jnp.array(tmp_val[1])),
-                        ]
-                    )
+                    self.measurements[index, :] = [position, np.mean(np.array(tmp_val[0])), np.mean(np.array(tmp_val[1]))]
                 except Exception as e:
                     print(f"An error with the DAQ measurements has occured: {e}")
 
-        return measurements
+        return
 
     def step(self, pos: float) -> int:
         """
@@ -95,11 +88,11 @@ class Experiment:
         """
         Normalize the measurement data to calculate transmission.
         """
-        transmission = jnp.zeros(self.zsamp)
+        transmission = np.zeros(self.zsamp)
         transmission = measurement_data[:, 1] / measurement_data[:, 2]
-        norm_factor = jnp.mean(transmission[0:10])
+        norm_factor = np.mean(transmission[0:10])
         transmission /= norm_factor
-        jnp.column_stack([measurement_data[:, 0], transmission])
+        np.column_stack([measurement_data[:, 0], transmission])
         return transmission
     
     def validate_measurements(self, measurements) -> bool:
