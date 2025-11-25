@@ -6,7 +6,7 @@ import nidaqmx
 
 from esp302 import ESP302
 
-jax.config.update("jax_enable_x64", True)
+
 
 
 class Experiment:
@@ -64,27 +64,27 @@ class Experiment:
 
         return 0
 
-    def save_all_data(self, measurement_data: Array, name: str):
+    def save_all_data(self, measurement_data, name: str):
         """
         Save all measurement data to a CSV file.
         """ 
-        onp.savetxt(
+        np.savetxt(
             name + ".csv",
             measurement_data,
             delimiter=",",
             header="Position (mm),ai0,ai1",
         )
 
-    def save_norm_data(self, measurement_data: Array, name: str):
+    def save_norm_data(self, measurement_data, name: str):
         """
         Save normalized measurement data to a CSV file.
         """
         norm_data = self.normalize(measurement_data)
-        onp.savetxt(
+        np.savetxt(
             name + ".csv", norm_data, delimiter=",", header="Position (mm),Transmission"
         )
 
-    def normalize(self, measurement_data: Array) -> Array:
+    def normalize(self, measurement_data):
         """
         Normalize the measurement data to calculate transmission.
         """
