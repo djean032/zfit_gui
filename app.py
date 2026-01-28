@@ -15,7 +15,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QTabWidget,
     QComboBox, 
-    QCheckBox
+    QCheckBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QSplitter
 )
 from PySide6.QtCore import QRegularExpression, Qt, QTimer
 import toml
@@ -38,6 +41,7 @@ class MplCanvas(FigureCanvas):
         fig = Figure(figsize=(width, height), dpi=dpi)
         self.axes = fig.add_subplot(111)
         super().__init__(fig)
+
 
 class GUI(QMainWindow):
     def __init__(self):
@@ -76,7 +80,10 @@ class GUI(QMainWindow):
         self.csv_file_path = None
         self.auto_refresh_enabled = False
         self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(self.reload_and_plot)
+        #self.refresh_timer.timeout.connect(self.reload_and_plot)
+
+        #Initialize z-scan data storage
+        self.zscan_data = None
 
 
     def setup_ui(self):
@@ -186,101 +193,242 @@ class GUI(QMainWindow):
         
         return tab
 
+
     def create_data_collection_tab(self):
+        """
+        Create the data collection tab
+        Plots z (mm) vs ai1/ai0
+        Saves data for use in fitting tab
+        """
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        label = QLabel("Data Collection Settings will go here.")
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
+        
+        # Create splitter for plot and data table
+        splitter = QSplitter(Qt.Vertical)
+        
+        # ===== TOP SECTION: PLOT =====
+        plot_group = QGroupBox("Z-Scan Data Plot")
+        plot_layout = QVBoxLayout(plot_group)
+        
+        # Create matplotlib figure and canvas
+        self.data_figure = Figure(figsize=(8, 5), dpi=100)
+        self.data_canvas = FigureCanvas(self.data_figure)
+        self.data_axes = self.data_figure.add_subplot(111)
+        
+        # Add navigation toolbar
+        self.data_toolbar = NavigationToolbar(self.data_canvas, tab)
+        
+        # Configure the plot
+        self.data_axes.set_xlabel('z (mm)', fontsize=11)
+        self.data_axes.set_ylabel('ai1/ai0', fontsize=11)
+        self.data_axes.set_title('Z-Scan Measurement', fontsize=12, fontweight='bold')
+        self.data_axes.grid(True, alpha=0.3)
+        
+        plot_layout.addWidget(self.data_toolbar)
+        plot_layout.addWidget(self.data_canvas)
+        
+        # Stats label
+        self.data_stats_label = QLabel("No data loaded")
+        self.data_stats_label.setStyleSheet("color: #666; padding: 5px;")
+        plot_layout.addWidget(self.data_stats_label)
+        
+        splitter.addWidget(plot_group)
+        
+        # ===== BOTTOM SECTION: DATA TABLE =====
+        table_group = QGroupBox("Data Table")
+        table_layout = QVBoxLayout(table_group)
+        
+        # Create table widget
+        self.data_table = QTableWidget()
+        self.data_table.setColumnCount(4)
+        self.data_table.setHorizontalHeaderLabels(['z (mm)', 'ai0', 'ai1', 'ai1/ai0'])
+        self.data_table.horizontalHeader().setStretchLastSection(True)
+        self.data_table.setAlternatingRowColors(True)
+        
+        table_layout.addWidget(self.data_table)
+        splitter.addWidget(table_group)
+        
+        # Set splitter sizes (70% plot, 30% table)
+        splitter.setSizes([700, 300])
+        layout.addWidget(splitter)
+        
+        # ===== CONTROL BUTTONS =====
+        button_layout = QHBoxLayout()
+        
+        # Load data button
+        load_data_btn = QPushButton("Load CSV Data")
+        load_data_btn.clicked.connect(self.load_zscan_data)
+        load_data_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 8px 16px;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        
+        # Export data button
+        self.export_data_btn = QPushButton("Export Data")
+        self.export_data_btn.clicked.connect(self.export_zscan_data)
+        self.export_data_btn.setEnabled(False)
+        
+        # Clear data button
+        self.clear_data_btn = QPushButton("Clear Data")
+        self.clear_data_btn.clicked.connect(self.clear_zscan_data)
+        self.clear_data_btn.setEnabled(False)
+        
+        button_layout.addWidget(load_data_btn)
+        button_layout.addWidget(self.export_data_btn)
+        button_layout.addWidget(self.clear_data_btn)
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
+        
         return tab
     
+
+    def load_zscan_data(self):
+        """Load z-scan data from CSV file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Z-Scan Data File",
+            "",
+            "CSV Files (*.csv);;All Files (*)"
+        )
+        
+        if file_path:
+            try:
+                # Read CSV file
+                self.zscan_data = pd.read_csv(file_path)
+                
+                # Check if required columns exist
+                required_cols = ['z(mm)', 'ai0', 'ai1']
+                if not all(col in self.zscan_data.columns for col in required_cols):
+                    raise ValueError(f"CSV must contain columns: {required_cols}")
+                
+                # Calculate ai1/ai0 ratio
+                self.zscan_data['ai1/ai0'] = self.zscan_data['ai1'] / self.zscan_data['ai0']
+                
+                # Update plot and table
+                self.update_zscan_plot()
+                self.update_zscan_table()
+                self.update_zscan_stats()
+                
+                # Enable export and clear buttons
+                self.export_data_btn.setEnabled(True)
+                self.clear_data_btn.setEnabled(True)
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load data: {str(e)}")
+                self.data_stats_label.setText(f"Error loading data: {str(e)}")
+                self.data_stats_label.setStyleSheet("color: red; padding: 5px;")
     
+    def update_zscan_plot(self):
+        """Update the plot with z-scan data"""
+        if self.zscan_data is not None:
+            z = self.zscan_data['z(mm)'].values
+            ratio = self.zscan_data['ai1/ai0'].values
+            
+            # Clear previous plot
+            self.data_axes.clear()
+            
+            # Plot new data
+            self.data_axes.plot(z, ratio, 'bo-', linewidth=2, markersize=6, label='Data')
+            
+            # Configure the plot
+            self.data_axes.set_xlabel('z (mm)', fontsize=11)
+            self.data_axes.set_ylabel('ai1/ai0', fontsize=11)
+            self.data_axes.set_title('Z-Scan Measurement', fontsize=12, fontweight='bold')
+            self.data_axes.grid(True, alpha=0.3)
+            self.data_axes.legend()
+            
+            # Refresh canvas
+            self.data_figure.tight_layout()
+            self.data_canvas.draw()
+    
+    def update_zscan_table(self):
+        """Update the data table with z-scan data"""
+        if self.zscan_data is not None:
+            self.data_table.setRowCount(len(self.zscan_data))
+            
+            for i, row in self.zscan_data.iterrows():
+                # z(mm)
+                self.data_table.setItem(i, 0, QTableWidgetItem(f"{row['z(mm)']:.2f}"))
+                # ai0
+                self.data_table.setItem(i, 1, QTableWidgetItem(f"{row['ai0']:.4f}"))
+                # ai1
+                self.data_table.setItem(i, 2, QTableWidgetItem(f"{row['ai1']:.4f}"))
+                # ai1/ai0
+                self.data_table.setItem(i, 3, QTableWidgetItem(f"{row['ai1/ai0']:.6f}"))
+    
+    def update_zscan_stats(self):
+        """Update statistics label"""
+        if self.zscan_data is not None:
+            n_points = len(self.zscan_data)
+            z_min = self.zscan_data['z(mm)'].min()
+            z_max = self.zscan_data['z(mm)'].max()
+            ratio_min = self.zscan_data['ai1/ai0'].min()
+            ratio_max = self.zscan_data['ai1/ai0'].max()
+            ratio_mean = self.zscan_data['ai1/ai0'].mean()
+            
+            stats_text = (f"Data points: {n_points} | "
+                         f"z range: [{z_min:.1f}, {z_max:.1f}] mm | "
+                         f"ai1/ai0 range: [{ratio_min:.4f}, {ratio_max:.4f}] | "
+                         f"Mean: {ratio_mean:.4f}")
+            
+            self.data_stats_label.setText(stats_text)
+            self.data_stats_label.setStyleSheet("color: #2E7D32; padding: 5px; font-weight: bold;")
+    
+    def export_zscan_data(self):
+        """Export z-scan data to CSV file"""
+        if self.zscan_data is not None:
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Z-Scan Data",
+                "zscan_data_processed.csv",
+                "CSV Files (*.csv)"
+            )
+            
+            if file_path:
+                try:
+                    self.zscan_data.to_csv(file_path, index=False)
+                    QMessageBox.information(self, "Success", f"Data exported to {file_path}")
+                    self.data_stats_label.setText(f"Data exported successfully")
+                    self.data_stats_label.setStyleSheet("color: #2E7D32; padding: 5px;")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to export data: {str(e)}")
+                    self.data_stats_label.setText(f"Error exporting data: {str(e)}")
+                    self.data_stats_label.setStyleSheet("color: red; padding: 5px;")
+    
+    def clear_zscan_data(self):
+        """Clear all z-scan data"""
+        self.zscan_data = None
+        self.data_axes.clear()
+        self.data_axes.set_xlabel('z (mm)', fontsize=11)
+        self.data_axes.set_ylabel('ai1/ai0', fontsize=11)
+        self.data_axes.set_title('Z-Scan Measurement', fontsize=12, fontweight='bold')
+        self.data_axes.grid(True, alpha=0.3)
+        self.data_canvas.draw()
+        
+        self.data_table.setRowCount(0)
+        self.data_stats_label.setText("No data loaded")
+        self.data_stats_label.setStyleSheet("color: #666; padding: 5px;")
+        
+        self.export_data_btn.setEnabled(False)
+        self.clear_data_btn.setEnabled(False)
+
+
+
     def create_fitting_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        
-        # Controls section
-        controls_group = QGroupBox("Data Collection Controls")
-        controls_layout = QVBoxLayout()
-        
-        # File loading row
-        file_row = QHBoxLayout()
-        load_csv_btn = QPushButton("Load CSV Data")
-        load_csv_btn.clicked.connect(self.load_csv_data)
-        
-        self.file_label = QLabel("No file loaded")
-        self.file_label.setStyleSheet("color: gray;")
-        
-        file_row.addWidget(load_csv_btn)
-        file_row.addWidget(self.file_label)
-        file_row.addStretch()
-        
-        # Auto-refresh controls
-        refresh_row = QHBoxLayout()
-        
-        self.auto_refresh_checkbox = QCheckBox("Auto-refresh")
-        self.auto_refresh_checkbox.stateChanged.connect(self.toggle_auto_refresh)
-        
-        refresh_label = QLabel("Interval (ms):")
-        self.refresh_interval_input = QLineEdit("1000")
-        self.refresh_interval_input.setMaximumWidth(80)
-        self.refresh_interval_input.textChanged.connect(self.update_refresh_interval)
-        
-        manual_refresh_btn = QPushButton("Refresh Now")
-        manual_refresh_btn.clicked.connect(self.reload_and_plot)
-        
-        refresh_row.addWidget(self.auto_refresh_checkbox)
-        refresh_row.addWidget(refresh_label)
-        refresh_row.addWidget(self.refresh_interval_input)
-        refresh_row.addWidget(manual_refresh_btn)
-        refresh_row.addStretch()
-        
-        controls_layout.addLayout(file_row)
-        controls_layout.addLayout(refresh_row)
-        
-        controls_group.setLayout(controls_layout)
-        layout.addWidget(controls_group)
-        
-        # Graph section
-        graph_group = QGroupBox("Data Visualization")
-        graph_layout = QVBoxLayout()
-        
-        # Create matplotlib canvas
-        self.canvas = MplCanvas(self, width=8, height=5, dpi=100)
-        
-        # Add navigation toolbar for zoom, pan, etc.
-        self.toolbar = NavigationToolbar(self.canvas, tab)
-        
-        graph_layout.addWidget(self.toolbar)
-        graph_layout.addWidget(self.canvas)
-        
-        # Graph controls
-        graph_controls = QHBoxLayout()
-        
-        # Use combo boxes instead of text inputs for easier column selection
-        self.x_column_combo = QComboBox()
-        self.x_column_combo.currentTextChanged.connect(self.update_plot)
-        
-        self.y_column_combo = QComboBox()
-        self.y_column_combo.currentTextChanged.connect(self.update_plot)
-        
-        clear_plot_btn = QPushButton("Clear Plot")
-        clear_plot_btn.clicked.connect(self.clear_plot)
-        
-        graph_controls.addWidget(QLabel("X Axis:"))
-        graph_controls.addWidget(self.x_column_combo)
-        graph_controls.addWidget(QLabel("Y Axis:"))
-        graph_controls.addWidget(self.y_column_combo)
-        graph_controls.addWidget(clear_plot_btn)
-        
-        graph_layout.addLayout(graph_controls)
-        
-        graph_group.setLayout(graph_layout)
-        layout.addWidget(graph_group)
-        
-        # Store loaded data
-        self.loaded_data = None
-        
+        label = QLabel("Data fitting tab will go here.")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
         return tab
 
 
@@ -315,6 +463,7 @@ class GUI(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
 
+
     def load_from_toml(self):
         """Load parameters from TOML file"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -343,6 +492,7 @@ class GUI(QMainWindow):
                 )
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}")
+
 
     def clear_all(self):
         """Clear all input fields"""
