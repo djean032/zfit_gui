@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QRegularExpression, Qt, QTimer, QThread, Signal
 import toml
-import pandas as pd
 import numpy as np
+from fit import normalize_transmission
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
@@ -172,8 +172,9 @@ class GUI(QMainWindow):
         self.laser_params = {
             "lambda_laser": "532e-9",
             "energy_pulse": "100e-9",
-            "W_o": "1.0e-6",
-            "mu_squared": "1.0",
+            "pulse_width": "8e-9",
+            "w_0": "1.0e-6",
+            "m_squared": "1.0",
         }
 
         self.sample_params = {
@@ -199,7 +200,7 @@ class GUI(QMainWindow):
         self.auto_refresh_enabled = False
         self.refresh_timer = QTimer()
 
-        self.zscan_data: pd.DataFrame | None = None
+        self.zscan_data: dict[str, np.ndarray] | None = None
         self.experiment_worker: ExperimentWorker | None = None
         self.fit_worker: FitWorker | None = None
 
@@ -232,8 +233,9 @@ class GUI(QMainWindow):
         laser_labels = {
             "lambda_laser": "Lambda Laser:",
             "energy_pulse": "Energy Pulse:",
-            "W_o": "W_o:",
-            "mu_squared": "Mu Squared:",
+            "pulse_width": "Pulse Width (s):",
+            "w_0": "w_0:",
+            "m_squared": "M Squared:",
         }
 
         row = 0
@@ -459,10 +461,10 @@ class GUI(QMainWindow):
         fit_labels = {
             "t_slices": "t_slices:",
             "z_slices": "z_slices:",
-            "num_x_pts": "num_x_pts:",
+            "num_starts": "num_starts:",
         }
 
-        defaults = {"t_slices": "11", "z_slices": "11", "num_x_pts": "100"}
+        defaults = {"t_slices": "11", "z_slices": "11", "num_starts": "5"}
 
         row = 0
         for key, label_text in fit_labels.items():
@@ -560,11 +562,18 @@ class GUI(QMainWindow):
             )
             if files:
                 try:
-                    self.fit_input_data = pd.read_csv(files)
+                    # Load CSV with numpy, skip header row
+                    data = np.loadtxt(files, delimiter=',', skiprows=1)
+                    self.fit_input_data = {
+                        "z(mm)": data[:, 0],
+                        "ai0": data[:, 1],
+                        "ai1": data[:, 2]
+                    }
+                    self.fit_num_x_pts = len(data[:, 0])  # Store num_x_pts from file
                     sidecar = files.replace(".csv", ".toml")
                     with open(sidecar, "r") as f:
                         self.fit_config = toml.load(f)
-                    self.fit_data_label.setText(f"Loaded: {files}")
+                    self.fit_data_label.setText(f"Loaded: {files} ({self.fit_num_x_pts} points)")
                     self.run_fit_btn.setEnabled(True)
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to load file: {e}")
@@ -577,29 +586,57 @@ class GUI(QMainWindow):
                 try:
                     x_data_list = []
                     y_data_list = []
+                    pulse_energies_list = []
                     ref_config = None
+                    ref_num_x_pts = None
 
                     for f in files:
-                        df = pd.read_csv(f)
-                        if (
-                            "z(mm)" not in df.columns
-                            or "ai1" not in df.columns
-                            or "ai0" not in df.columns
-                        ):
+                        # Load CSV with numpy, skip header row
+                        data = np.loadtxt(f, delimiter=',', skiprows=1)
+                        if data.shape[1] < 3:
                             QMessageBox.critical(
-                                self, "Error", f"Invalid format in {f}"
+                                self, "Error", f"Invalid format in {f}: expected at least 3 columns"
                             )
                             return
-                        x_data_list.append(df["z(mm)"].values)
-                        y_data_list.append((df["ai1"] / df["ai0"]).values)
+                        
+                        num_x_pts = len(data[:, 0])
+                        
+                        # Validate that all files have the same number of x points
+                        if ref_num_x_pts is None:
+                            ref_num_x_pts = num_x_pts
+                        elif num_x_pts != ref_num_x_pts:
+                            QMessageBox.critical(
+                                self, "Error", 
+                                f"File {f} has {num_x_pts} points, but expected {ref_num_x_pts}. "
+                                f"All files must have the same number of data points."
+                            )
+                            return
+                        
+                        x_data_list.append(data[:, 0])
+                        y_data_list.append(data[:, 2] / data[:, 1])
 
                         sidecar = f.replace(".csv", ".toml")
                         with open(sidecar, "r") as cf:
                             config = toml.load(cf)
+                        
+                        # Extract pulse energy from sidecar
+                        pulse_energy = config.get("experiment", {}).get("pulse_energy")
+                        if pulse_energy is None:
+                            pulse_energy = config.get("laser", {}).get("energy_pulse")
+                        if pulse_energy is None:
+                            QMessageBox.critical(
+                                self, "Error", f"No pulse energy found in {sidecar}"
+                            )
+                            return
+                        pulse_energies_list.append(float(pulse_energy))
+                        
                         if ref_config is None:
                             ref_config = config
                         else:
-                            if config != ref_config:
+                            # Compare configs excluding experiment-specific fields
+                            ref_copy = {k: v for k, v in ref_config.items() if k != "experiment"}
+                            config_copy = {k: v for k, v in config.items() if k != "experiment"}
+                            if config_copy != ref_copy:
                                 reply = QMessageBox.question(
                                     self,
                                     "Metadata Discrepancy",
@@ -612,8 +649,10 @@ class GUI(QMainWindow):
                     self.fit_input_x = np.concatenate(x_data_list)
                     self.fit_input_y = np.concatenate(y_data_list)
                     self.fit_config = ref_config
+                    self.fit_pulse_energies = np.array(pulse_energies_list)
                     self.fit_num_datasets = len(files)
-                    self.fit_data_label.setText(f"Loaded {len(files)} files")
+                    self.fit_num_x_pts = ref_num_x_pts  # Store validated num_x_pts
+                    self.fit_data_label.setText(f"Loaded {len(files)} files ({ref_num_x_pts} points each)")
                     self.run_fit_btn.setEnabled(True)
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to load files: {e}")
@@ -653,8 +692,12 @@ class GUI(QMainWindow):
         self.experiment_progress.setValue(value)
 
     def on_experiment_finished(self, data: np.ndarray) -> None:
-        self.zscan_data = pd.DataFrame(data, columns=["z(mm)", "ai0", "ai1"])
-        self.zscan_data["ai1/ai0"] = self.zscan_data["ai1"] / self.zscan_data["ai0"]
+        self.zscan_data = {
+            "z(mm)": data[:, 0],
+            "ai0": data[:, 1],
+            "ai1": data[:, 2],
+            "ai1/ai0": data[:, 2] / data[:, 1]
+        }
 
         self.update_zscan_plot()
         self.update_zscan_table()
@@ -679,28 +722,43 @@ class GUI(QMainWindow):
         try:
             t_slices = int(self.fitting_inputs["t_slices"].text())
             z_slices = int(self.fitting_inputs["z_slices"].text())
-            num_x_pts = int(self.fitting_inputs["num_x_pts"].text())
+            num_starts = int(self.fitting_inputs["num_starts"].text())
 
             if mode == "Current Data":
                 if self.zscan_data is None:
                     QMessageBox.warning(self, "No Data", "Please run experiment first")
                     return
-                x_data = self.zscan_data["z(mm)"].values
-                y_data = self.zscan_data["ai1/ai0"].values
+                x_data = self.zscan_data["z(mm)"]
+                y_data = self.zscan_data["ai1/ai0"]
+                # Normalize the data before fitting
+                y_data = normalize_transmission(y_data)
                 config = self.get_current_parameters()
                 pulse_energies = None
                 num_datasets = 1
+                num_x_pts = len(x_data)  # Determine from current data
             elif mode == "Single File":
-                x_data = self.fit_input_data["z(mm)"].values
+                x_data = self.fit_input_data["z(mm)"]
                 y_data = self.fit_input_data["ai1"] / self.fit_input_data["ai0"]
+                # Normalize the data before fitting
+                y_data = normalize_transmission(y_data)
                 config = self.fit_config
                 pulse_energies = None
                 num_datasets = 1
+                num_x_pts = self.fit_num_x_pts  # Use stored value from file
             else:
                 x_data = self.fit_input_x
                 y_data = self.fit_input_y
+                # Normalize each dataset individually
+                num_x_pts = self.fit_num_x_pts or len(y_data)  # Fallback if None
+                normalized_y = []
+                for i in range(self.fit_num_datasets):
+                    start_idx = i * num_x_pts
+                    end_idx = start_idx + num_x_pts
+                    dataset_y = y_data[start_idx:end_idx]
+                    normalized_y.append(normalize_transmission(dataset_y))
+                y_data = np.concatenate(normalized_y)
                 config = self.fit_config
-                pulse_energies = None
+                pulse_energies = self.fit_pulse_energies
                 num_datasets = self.fit_num_datasets
 
             self.fit_worker = FitWorker(
@@ -708,7 +766,7 @@ class GUI(QMainWindow):
                 y_data,
                 config,
                 pulse_energies,
-                num_starts=1,
+                num_starts=num_starts,
                 num_datasets=num_datasets,
                 num_x_pts=num_x_pts,
                 t_slices=t_slices,
@@ -735,14 +793,25 @@ class GUI(QMainWindow):
 
         mode = self.fitting_mode_combo.currentText()
         if mode == "Current Data":
-            x_data = self.zscan_data["z(mm)"].values
-            y_data = self.zscan_data["ai1/ai0"].values
+            x_data = self.zscan_data["z(mm)"]
+            y_data = self.zscan_data["ai1/ai0"]
+            y_data = normalize_transmission(y_data)
         elif mode == "Single File":
-            x_data = self.fit_input_data["z(mm)"].values
+            x_data = self.fit_input_data["z(mm)"]
             y_data = self.fit_input_data["ai1"] / self.fit_input_data["ai0"]
+            y_data = normalize_transmission(y_data)
         else:
             x_data = self.fit_input_x
             y_data = self.fit_input_y
+            # Normalize each dataset for plotting
+            num_x_pts = self.fit_num_x_pts or (len(y_data) // self.fit_num_datasets if self.fit_num_datasets > 0 else len(y_data))
+            normalized_y = []
+            for i in range(self.fit_num_datasets):
+                start_idx = i * num_x_pts
+                end_idx = start_idx + num_x_pts
+                dataset_y = y_data[start_idx:end_idx]
+                normalized_y.append(normalize_transmission(dataset_y))
+            y_data = np.concatenate(normalized_y)
 
         y_fitted = y_data - residuals
 
@@ -784,15 +853,17 @@ class GUI(QMainWindow):
 
         if file_path:
             try:
-                self.zscan_data = pd.read_csv(file_path)
-
-                required_cols = ["z(mm)", "ai0", "ai1"]
-                if not all(col in self.zscan_data.columns for col in required_cols):
-                    raise ValueError(f"CSV must contain columns: {required_cols}")
-
-                self.zscan_data["ai1/ai0"] = (
-                    self.zscan_data["ai1"] / self.zscan_data["ai0"]
-                )
+                # Load CSV with numpy, skip header row
+                data = np.loadtxt(file_path, delimiter=',', skiprows=1)
+                if data.shape[1] < 3:
+                    raise ValueError(f"CSV must contain at least 3 columns (z, ai0, ai1)")
+                
+                self.zscan_data = {
+                    "z(mm)": data[:, 0],
+                    "ai0": data[:, 1],
+                    "ai1": data[:, 2],
+                    "ai1/ai0": data[:, 2] / data[:, 1]
+                }
 
                 self.update_zscan_plot()
                 self.update_zscan_table()
@@ -837,8 +908,8 @@ class GUI(QMainWindow):
 
     def update_zscan_plot(self) -> None:
         if self.zscan_data is not None:
-            z = self.zscan_data["z(mm)"].values
-            ratio = self.zscan_data["ai1/ai0"].values
+            z = self.zscan_data["z(mm)"]
+            ratio = self.zscan_data["ai1/ai0"]
 
             self.data_axes.clear()
             self.data_axes.plot(
@@ -856,22 +927,27 @@ class GUI(QMainWindow):
 
     def update_zscan_table(self) -> None:
         if self.zscan_data is not None:
-            self.data_table.setRowCount(len(self.zscan_data))
+            self.data_table.setRowCount(len(self.zscan_data["z(mm)"]))
 
-            for i, row in self.zscan_data.iterrows():
-                self.data_table.setItem(i, 0, QTableWidgetItem(f"{row['z(mm)']:.2f}"))
-                self.data_table.setItem(i, 1, QTableWidgetItem(f"{row['ai0']:.4f}"))
-                self.data_table.setItem(i, 2, QTableWidgetItem(f"{row['ai1']:.4f}"))
-                self.data_table.setItem(i, 3, QTableWidgetItem(f"{row['ai1/ai0']:.6f}"))
+            z_data = self.zscan_data["z(mm)"]
+            ai0_data = self.zscan_data["ai0"]
+            ai1_data = self.zscan_data["ai1"]
+            ratio_data = self.zscan_data["ai1/ai0"]
+            
+            for i in range(len(z_data)):
+                self.data_table.setItem(i, 0, QTableWidgetItem(f"{z_data[i]:.2f}"))
+                self.data_table.setItem(i, 1, QTableWidgetItem(f"{ai0_data[i]:.4f}"))
+                self.data_table.setItem(i, 2, QTableWidgetItem(f"{ai1_data[i]:.4f}"))
+                self.data_table.setItem(i, 3, QTableWidgetItem(f"{ratio_data[i]:.6f}"))
 
     def update_zscan_stats(self) -> None:
         if self.zscan_data is not None:
-            n_points = len(self.zscan_data)
-            z_min = self.zscan_data["z(mm)"].min()
-            z_max = self.zscan_data["z(mm)"].max()
-            ratio_min = self.zscan_data["ai1/ai0"].min()
-            ratio_max = self.zscan_data["ai1/ai0"].max()
-            ratio_mean = self.zscan_data["ai1/ai0"].mean()
+            n_points = len(self.zscan_data["z(mm)"])
+            z_min = np.min(self.zscan_data["z(mm)"])
+            z_max = np.max(self.zscan_data["z(mm)"])
+            ratio_min = np.min(self.zscan_data["ai1/ai0"])
+            ratio_max = np.max(self.zscan_data["ai1/ai0"])
+            ratio_mean = np.mean(self.zscan_data["ai1/ai0"])
 
             stats_text = (
                 f"Data points: {n_points} | "
@@ -895,9 +971,9 @@ class GUI(QMainWindow):
                 try:
                     csv_data = np.column_stack(
                         [
-                            self.zscan_data["z(mm)"].values,
-                            self.zscan_data["ai0"].values,
-                            self.zscan_data["ai1"].values,
+                            self.zscan_data["z(mm)"],
+                            self.zscan_data["ai0"],
+                            self.zscan_data["ai1"],
                         ]
                     )
 

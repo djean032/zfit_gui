@@ -2,8 +2,9 @@
 #laser parameters
 lambda_laser = "None"
 energy_pulse = "None"
+pulse_width = "None"
 W_o = "Test1"
-mu_squared = "None"
+m_squared = "None"
 
 [sample]
 #sample parameters
