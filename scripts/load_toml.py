@@ -1,6 +1,7 @@
-import tomli  # For Python < 3.11, use 'pip install tomli'
-
-# import tomllib  # For Python >= 3.11 (built-in)
+try:
+    import tomllib as _toml_loader
+except ModuleNotFoundError:
+    import tomli as _toml_loader
 
 
 def read_toml_config(filename):
@@ -15,12 +16,12 @@ def read_toml_config(filename):
     """
     try:
         with open(filename, "rb") as f:
-            config = tomli.load(f)  # Use tomllib.load() for Python >= 3.11
+            config = _toml_loader.load(f)
         return config
     except FileNotFoundError:
         print(f"Error: File '{filename}' not found.")
         return None
-    except tomli.TOMLDecodeError as e:
+    except _toml_loader.TOMLDecodeError as e:
         print(f"Error parsing TOML file: {e}")
         return None
 

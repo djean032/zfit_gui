@@ -4,7 +4,7 @@ import toml
 
 # Create toml file and call write function
 def create_toml_file(config):
-    filename = f"zfit_config.toml"
+    filename = "zfit_config.toml"
     write_toml_config(config, filename)
 
 

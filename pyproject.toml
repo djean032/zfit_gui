@@ -1,0 +1,57 @@
+[project]
+name = "zscan-studio"
+version = "0.1.0"
+description = "GUI application for Z-scan data acquisition and fitting"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "pyside6>=6.7",
+    "scipy>=1.13",
+    "tomli>=2.0.1; python_version < '3.11'",
+    "toml>=0.10.2",
+]
+
+[project.optional-dependencies]
+hardware = [
+    "nidaqmx>=1.0.0",
+]
+
+[project.scripts]
+zscan-studio = "zscan_studio.launcher:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = [
+    "black>=24.8.0",
+    "pytest>=8.3.0",
+    "ruff>=0.6.0",
+]
+
+[tool.black]
+line-length = 140
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"app.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]

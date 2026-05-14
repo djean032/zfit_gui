@@ -5,9 +5,7 @@ from typing import Callable
 import numpy as np
 import toml
 
-import nidaqmx
-
-from esp302 import ESP302
+from zscan_studio.esp302 import ESP302
 
 
 def generate_z_positions(zlim: float, zsamp: int, spacing_type: str) -> np.ndarray:
@@ -55,13 +53,11 @@ class Experiment:
         """
         self._should_stop = False
         self.measurements[:] = 0
+        import nidaqmx
+
         with nidaqmx.Task() as task:
-            task.ai_channels.add_ai_voltage_chan(
-                "Dev1/ai0", min_val=-10.0, max_val=10.0
-            )
-            task.ai_channels.add_ai_voltage_chan(
-                "Dev1/ai1", min_val=-10.0, max_val=10.0
-            )
+            task.ai_channels.add_ai_voltage_chan("Dev1/ai0", min_val=-10.0, max_val=10.0)
+            task.ai_channels.add_ai_voltage_chan("Dev1/ai1", min_val=-10.0, max_val=10.0)
             for index, position in enumerate(self.zpos):
                 if self._should_stop:
                     break
@@ -70,9 +66,7 @@ class Experiment:
                 try:
                     tmp_val = task.read(number_of_samples_per_channel=self.samp_per_pos)
                     if not self.validate_measurements(tmp_val):
-                        print(
-                            f"Warning: Measurements at position {position} mm are out of expected range."
-                        )
+                        print(f"Warning: Measurements at position {position} mm are out of expected range.")
                     self.measurements[index, :] = [
                         position,
                         np.mean(np.array(tmp_val[0])),
