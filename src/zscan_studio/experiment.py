@@ -6,18 +6,7 @@ import numpy as np
 import toml
 
 from zscan_studio.esp302 import ESP302
-
-
-def generate_z_positions(zlim: float, zsamp: int, spacing_type: str) -> np.ndarray:
-    """Generate z positions for Z-scan with different spacing options."""
-    u = np.linspace(-1, 1, zsamp)
-
-    if spacing_type == "Linear":
-        return zlim * u
-    elif spacing_type == "Power Law":
-        return zlim * np.sign(u) * np.abs(u) ** 2
-    else:
-        return zlim * u
+from zscan_studio.math_utils import generate_z_positions
 
 
 class Experiment:
@@ -33,7 +22,7 @@ class Experiment:
         self.spacing_type: str = spacing_type
         self.zpos: np.ndarray = generate_z_positions(zlim, zsamp, spacing_type)
         self.samp_per_pos: int = samp_per_pos
-        self.stage: ESP302 = ESP302()
+        self.stage: ESP302 | None = None
         self.zaxis: int = 3
         self.measurements: np.ndarray = np.zeros(shape=(self.zsamp, 3))
         self._should_stop: bool = False
@@ -55,32 +44,42 @@ class Experiment:
         self.measurements[:] = 0
         import nidaqmx
 
-        with nidaqmx.Task() as task:
-            task.ai_channels.add_ai_voltage_chan("Dev1/ai0", min_val=-10.0, max_val=10.0)
-            task.ai_channels.add_ai_voltage_chan("Dev1/ai1", min_val=-10.0, max_val=10.0)
-            for index, position in enumerate(self.zpos):
-                if self._should_stop:
-                    break
+        self.stage = ESP302()
+        try:
+            with nidaqmx.Task() as task:
+                task.ai_channels.add_ai_voltage_chan("Dev1/ai0", min_val=-10.0, max_val=10.0)
+                task.ai_channels.add_ai_voltage_chan("Dev1/ai1", min_val=-10.0, max_val=10.0)
+                for index, position in enumerate(self.zpos):
+                    if self._should_stop:
+                        break
 
-                self.step(position)
-                try:
-                    tmp_val = task.read(number_of_samples_per_channel=self.samp_per_pos)
-                    if not self.validate_measurements(tmp_val):
-                        print(f"Warning: Measurements at position {position} mm are out of expected range.")
-                    self.measurements[index, :] = [
-                        position,
-                        np.mean(np.array(tmp_val[0])),
-                        np.mean(np.array(tmp_val[1])),
-                    ]
+                    self.step(position)
+                    try:
+                        tmp_val = task.read(number_of_samples_per_channel=self.samp_per_pos)
+                        if not self.validate_measurements(tmp_val):
+                            print(f"Warning: Measurements at position {position} mm are out of expected range.")
+                        self.measurements[index, :] = [
+                            position,
+                            np.mean(np.array(tmp_val[0])),
+                            np.mean(np.array(tmp_val[1])),
+                        ]
 
-                    if progress_callback is not None:
-                        progress = int((index + 1) / self.zsamp * 100)
-                        progress_callback(progress)
-                except Exception as e:
-                    print(f"An error with the DAQ measurements has occurred: {e}")
+                        if progress_callback is not None:
+                            progress = int((index + 1) / self.zsamp * 100)
+                            progress_callback(progress)
+                    except Exception as e:
+                        print(f"An error with the DAQ measurements has occurred: {e}")
+        finally:
+            if self.stage is not None:
+                self.stage.close()
+                self.stage = None
 
     def step(self, pos: float) -> int:
         """Move the stage to the specified position."""
+        if self.stage is None:
+            print("Stage is not initialized.")
+            return 1
+
         try:
             self.stage.moveAbsolute(self.zaxis, pos)
         except Exception as e:
@@ -165,12 +164,7 @@ class Experiment:
 
     def _format_energy(self, energy: float) -> str:
         """Format energy value for filename."""
-        if energy >= 1e-3:
-            return f"{energy:.0e}"
-        elif energy >= 1e-6:
-            return f"{energy:.0e}"
-        else:
-            return f"{energy:.0e}"
+        return f"{energy:.0e}"
 
     def move_test(self) -> None:
         stage = ESP302()

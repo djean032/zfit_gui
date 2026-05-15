@@ -4,26 +4,19 @@ from pathlib import Path
 import numpy as np
 import toml
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-from PySide6.QtCore import QRegularExpression, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QRegularExpression, Qt, QTimer
 from PySide6.QtGui import QPixmap, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
-    QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
-    QPushButton,
     QSplashScreen,
-    QSplitter,
-    QTableWidget,
+    QStatusBar,
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
@@ -31,27 +24,22 @@ from PySide6.QtWidgets import (
 )
 
 from zscan_studio.fit import normalize_transmission
-
-
-def generate_z_positions(zlim: float, zsamp: int, spacing_type: str) -> np.ndarray:
-    """Generate z positions for Z-scan with different spacing options.
-
-    Args:
-        zlim: Maximum z position (range is [-zlim, zlim])
-        zsamp: Number of sample points
-        spacing_type: Either "Linear" or "Power Law"
-
-    Returns:
-        Array of z positions
-    """
-    u = np.linspace(-1, 1, zsamp)
-
-    if spacing_type == "Linear":
-        return zlim * u
-    elif spacing_type == "Power Law":
-        return zlim * np.sign(u) * np.abs(u) ** 2
-    else:
-        return zlim * u
+from zscan_studio.math_utils import generate_z_positions
+from zscan_studio.plot_styles import annotate_series, get_plot_style_tokens, style_plot_axes
+from zscan_studio.ui_builders import (
+    create_configuration_tab as build_configuration_tab,
+)
+from zscan_studio.ui_builders import (
+    create_data_collection_tab as build_data_collection_tab,
+)
+from zscan_studio.ui_builders import (
+    create_fitting_tab as build_fitting_tab,
+)
+from zscan_studio.ui_metadata import (
+    FIT_PARAM_LABELS,
+    FITTING_MODE_HELP,
+)
+from zscan_studio.workers import ExperimentWorker, FitWorker
 
 
 def input_validation_sci() -> QRegularExpressionValidator:
@@ -75,100 +63,10 @@ class MplCanvas(FigureCanvas):
         super().__init__(fig)
 
 
-class ExperimentWorker(QThread):
-    """Worker thread for running the experiment"""
-
-    progress = Signal(int)
-    finished = Signal(object)
-    error = Signal(str)
-
-    def __init__(
-        self,
-        config: dict,
-        zlim: float,
-        zsamp: int,
-        spacing_type: str = "Linear",
-        samp_per_pos: int = 4,
-    ) -> None:
-        super().__init__()
-        self.config = config
-        self.zlim = zlim
-        self.zsamp = zsamp
-        self.spacing_type = spacing_type
-        self.samp_per_pos = samp_per_pos
-        self.exp = None
-
-    def run(self) -> None:
-        try:
-            from zscan_studio.experiment import Experiment
-
-            self.exp = Experiment(self.zlim, self.zsamp, self.samp_per_pos, self.spacing_type)
-
-            def progress_callback(value: int) -> None:
-                self.progress.emit(value)
-
-            self.exp.collect(progress_callback=progress_callback)
-            self.finished.emit(self.exp.measurements)
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-class FitWorker(QThread):
-    """Worker thread for running the fit"""
-
-    progress = Signal(int)
-    finished = Signal(object)
-    error = Signal(str)
-
-    def __init__(
-        self,
-        x_data: np.ndarray,
-        y_data: np.ndarray,
-        config: dict,
-        pulse_energies: np.ndarray | None,
-        num_starts: int,
-        num_datasets: int,
-        num_x_pts: int,
-        t_slices: int = 11,
-        z_slices: int = 11,
-    ) -> None:
-        super().__init__()
-        self.x_data = x_data
-        self.y_data = y_data
-        self.config = config
-        self.pulse_energies = pulse_energies
-        self.num_starts = num_starts
-        self.num_datasets = num_datasets
-        self.num_x_pts = num_x_pts
-        self.t_slices = t_slices
-        self.z_slices = z_slices
-
-    def run(self) -> None:
-        try:
-            from zscan_studio.fit import fit_data
-
-            self.progress.emit(50)
-            result = fit_data(
-                self.x_data,
-                self.y_data,
-                self.config,
-                self.pulse_energies,
-                self.num_starts,
-                self.num_datasets,
-                self.num_x_pts,
-                self.t_slices,
-                self.z_slices,
-            )
-            self.progress.emit(100)
-            self.finished.emit(result)
-        except Exception as e:
-            self.error.emit(str(e))
-
-
 class GUI(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Laser & Sample Parameter Input")
+        self.setWindowTitle("ZScan Studio")
         self.setMinimumWidth(800)
 
         self.laser_params = {
@@ -196,7 +94,14 @@ class GUI(QMainWindow):
             "t_43": "1.0e-15",
         }
 
+        self.fit_results: dict | None = None
+        self.current_theme = "light"
+        self.dark_accent_soft = "#9FEA8F"
+        self.section_state: dict[str, bool] = {}
+        self.sections: dict[str, object] = {}
+
         self.setup_ui()
+        self._setup_status_bar()
 
         self.csv_file_path = None
         self.auto_refresh_enabled = False
@@ -205,13 +110,346 @@ class GUI(QMainWindow):
         self.zscan_data: dict[str, np.ndarray] | None = None
         self.experiment_worker: ExperimentWorker | None = None
         self.fit_worker: FitWorker | None = None
+        self._fit_param_labels = FIT_PARAM_LABELS.copy()
 
-        self.fit_results: dict | None = None
+        self.apply_light_scientific_theme()
+
+    def _setup_status_bar(self) -> None:
+        status = QStatusBar(self)
+        self.setStatusBar(status)
+        self.show_status_message("Ready. Configure parameters to begin.")
+
+    def _set_status_bar_style(self, background: str, text: str, border: str) -> None:
+        if self.statusBar() is not None:
+            self.statusBar().setStyleSheet(f"background: {background}; color: {text}; border-top: 1px solid {border};")
+
+    def show_status_message(self, message: str, timeout_ms: int = 4000) -> None:
+        if self.statusBar() is not None:
+            self.statusBar().showMessage(message, timeout_ms)
+
+    def plain_fit_label(self, label: str) -> str:
+        return label.replace("<sub>", "_").replace("</sub>", "").replace("<sup>", "^").replace("</sup>", "")
+
+    def get_section_collapsed(self, key: str, default: bool) -> bool:
+        return self.section_state.get(key, default)
+
+    def set_section_collapsed(self, key: str, collapsed: bool) -> None:
+        self.section_state[key] = collapsed
+
+    def apply_light_scientific_theme(self) -> None:
+        self.current_theme = "light"
+        self.setStyleSheet("""
+            QMainWindow { background-color: #F6FAFA; color: #163535; }
+            QTabWidget::pane { border: 1px solid #D7E3E3; background: #FFFFFF; border-radius: 8px; top: -1px; }
+            QTabBar::tab {
+                background: #EAF3F3; color: #355555; border: 1px solid #D7E3E3;
+                padding: 10px 18px; margin-right: 4px; border-top-left-radius: 8px; border-top-right-radius: 8px;
+            }
+            QTabBar::tab:selected { background: #FFFFFF; color: #0F766E; font-weight: 600; }
+            QGroupBox {
+                background: #FFFFFF; border: 1px solid #D7E3E3; border-radius: 10px;
+                margin-top: 16px; padding: 16px; font-weight: 600; color: #234;
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; color: #0F766E; }
+            QLabel { color: #204848; }
+            QLineEdit, QComboBox {
+                background: #FCFEFE; border: 1px solid #C7D8D8; border-radius: 7px; padding: 8px 10px; min-height: 18px;
+            }
+            QLineEdit:focus, QComboBox:focus { border: 1px solid #0F766E; background: #FFFFFF; }
+            QComboBox QAbstractItemView {
+                background: #FFFFFF;
+                color: #163535;
+                border: 1px solid #C7D8D8;
+                selection-background-color: #CDEBE8;
+                selection-color: #123030;
+                outline: 0;
+            }
+            QComboBox QAbstractItemView::item {
+                min-height: 24px;
+                padding: 4px 8px;
+            }
+            QComboBox QAbstractItemView::item:hover {
+                background: #DDF3F1;
+                color: #123030;
+            }
+            QPushButton {
+                border: 1px solid #C7D8D8; border-radius: 8px; background: #F7FBFB; color: #1D3F3F; padding: 9px 14px;
+            }
+            QPushButton:hover { background: #EEF7F7; border: 1px solid #AFC9C9; }
+            QPushButton:disabled { background: #F2F5F5; color: #8AA0A0; border: 1px solid #D6E0E0; }
+            QTableWidget {
+                border: 1px solid #D7E3E3; border-radius: 8px; gridline-color: #E6EEEE;
+                selection-background-color: #CDEBE8; alternate-background-color: #F7FBFB;
+            }
+            QHeaderView::section {
+                background: #EAF3F3; color: #274C4C; padding: 8px; border: none;
+                border-right: 1px solid #D7E3E3; border-bottom: 1px solid #D7E3E3; font-weight: 600;
+            }
+            QProgressBar {
+                border: 1px solid #D7E3E3; border-radius: 6px; text-align: center; background: #FFFFFF; min-height: 18px;
+            }
+            QProgressBar::chunk { background-color: #0F766E; border-radius: 5px; }
+            """)
+        self._set_status_bar_style("#EAF3F3", "#244848", "#D7E3E3")
+        if hasattr(self, "lcars_rail"):
+            self.lcars_rail.setVisible(False)
+        self._apply_theme_specific_widget_styles()
+        self._apply_helper_text_styles()
+        self._apply_plot_theme()
+
+    def apply_dark_laser_theme(self) -> None:
+        self.current_theme = "dark"
+        self.setStyleSheet("""
+            QMainWindow { background-color: #101010; color: #EDE8D2; }
+            QTabWidget::pane { border: 1px solid #3A321C; background: #151515; border-radius: 8px; top: -1px; }
+            QTabBar::tab {
+                background: #1D1A13; color: #CCB26B; border: 1px solid #3A321C;
+                padding: 10px 18px; margin-right: 4px; border-top-left-radius: 8px; border-top-right-radius: 8px;
+            }
+            QTabBar::tab:selected { background: #151515; color: #F2D27E; font-weight: 700; }
+            QGroupBox {
+                background: #181818; border: 1px solid #3A321C; border-radius: 10px;
+                margin-top: 16px; padding: 16px; font-weight: 600; color: #E6DCBF;
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; color: #D3B66F; }
+            QLabel { color: #E9DFC2; }
+            QLineEdit, QComboBox {
+                background: #111111; border: 1px solid #4A4126; border-radius: 7px; padding: 8px 10px; min-height: 18px; color: #F1E8CC;
+            }
+            QLineEdit:focus, QComboBox:focus { border: 1px solid #77FF64; background: #0F120F; }
+            QComboBox QAbstractItemView {
+                background: #121212; color: #F1E8CC; border: 1px solid #4A4126;
+                selection-background-color: #26391E; selection-color: #D8FFCD; outline: 0;
+            }
+            QComboBox QAbstractItemView::item { min-height: 24px; padding: 4px 8px; }
+            QComboBox QAbstractItemView::item:hover { background: #2C421F; color: #D8FFCD; }
+            QPushButton {
+                border: 1px solid #4A4126; border-radius: 8px; background: #1A1A1A; color: #EFDFAF; padding: 9px 14px;
+            }
+            QPushButton:hover { background: #232323; border: 1px solid #6A5A2D; }
+            QPushButton:disabled { background: #171717; color: #746D58; border: 1px solid #383328; }
+            QTableWidget {
+                border: 1px solid #3A321C; border-radius: 8px; gridline-color: #26221A;
+                selection-background-color: #2C421F; alternate-background-color: #141414; color: #EEDFB5;
+                background: #121212;
+            }
+            QTableWidget::item { background: #121212; color: #EEDFB5; }
+            QTableWidget::item:alternate { background: #161616; }
+            QTableWidget::item:selected { background: #2C421F; color: #D8FFCD; }
+            QTableCornerButton::section { background: #1E1B14; border: 1px solid #3A321C; }
+            QHeaderView::section {
+                background: #1E1B14; color: #D7BC76; padding: 8px; border: none;
+                border-right: 1px solid #3A321C; border-bottom: 1px solid #3A321C; font-weight: 700;
+            }
+            QProgressBar {
+                border: 1px solid #3A321C; border-radius: 6px; text-align: center; background: #121212; min-height: 18px; color: #E9DFC2;
+            }
+            QProgressBar::chunk { background-color: #77FF64; border-radius: 5px; }
+            """)
+        self._set_status_bar_style("#1B1B1B", "#E3D8B8", "#3A321C")
+        if hasattr(self, "lcars_rail"):
+            self.lcars_rail.setVisible(False)
+        self._apply_theme_specific_widget_styles()
+        self._apply_helper_text_styles()
+        self._apply_plot_theme()
+
+    def apply_tng_theme(self) -> None:
+        self.current_theme = "tng"
+        self.setStyleSheet("""
+            QMainWindow { background-color: #15182A; color: #f5f6fa; }
+            QTabWidget::pane { border: 1px solid #ff9966; background: #171B2F; border-radius: 12px; top: -1px; }
+            QTabBar::tab {
+                background: #9966ff; color: #f5f6fa; border: 1px solid #ff9966;
+                padding: 10px 18px; margin-right: 4px; border-top-left-radius: 16px; border-top-right-radius: 16px;
+            }
+            QTabBar::tab:selected { background: #ff9966; color: #15182A; font-weight: 800; }
+            QGroupBox {
+                background: #1B1F36; border: 1px solid #ff9966; border-radius: 14px;
+                margin-top: 16px; padding: 16px; font-weight: 700; color: #f5f6fa;
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 10px; color: #ffcc99; }
+            QLabel { color: #f5f6fa; }
+            QLineEdit, QComboBox {
+                background: #11152A; border: 1px solid #ff9966; border-radius: 11px; padding: 8px 12px; min-height: 18px; color: #f5f6fa;
+            }
+            QLineEdit:focus, QComboBox:focus { border: 1px solid #8899ff; background: #121A2C; }
+            QComboBox QAbstractItemView {
+                background: #12182E; color: #f5f6fa; border: 1px solid #ff9966;
+                selection-background-color: #cc55ff; selection-color: #f5f6fa; outline: 0;
+            }
+            QComboBox QAbstractItemView::item { min-height: 24px; padding: 4px 8px; }
+            QComboBox QAbstractItemView::item:hover { background: #9966ff; color: #f5f6fa; }
+            QPushButton {
+                border: 1px solid #ff9966; border-radius: 20px; background: #5566ff; color: #f5f6fa; padding: 10px 18px;
+            }
+            QPushButton:hover { background: #8899ff; border: 1px solid #ffcc99; }
+            QPushButton:disabled { background: #2b2f42; color: #666688; border: 1px solid #4b4f62; }
+            QTableWidget {
+                border: 1px solid #ff9966; border-radius: 10px; gridline-color: #2A3550;
+                selection-background-color: #cc55ff; alternate-background-color: #121A30; color: #f5f6fa;
+                background: #0f1529;
+            }
+            QTableWidget::item { background: #0f1529; color: #f5f6fa; }
+            QTableWidget::item:alternate { background: #141e38; }
+            QTableWidget::item:selected { background: #cc55ff; color: #f5f6fa; }
+            QTableCornerButton::section { background: #2f2038; border: 1px solid #ff9966; }
+            QHeaderView::section {
+                background: #cc99ff; color: #15182A; padding: 8px; border: none;
+                border-right: 1px solid #ff9966; border-bottom: 1px solid #ff9966; font-weight: 800;
+            }
+            QProgressBar {
+                border: 1px solid #ff9966; border-radius: 10px; text-align: center; background: #101728; min-height: 18px; color: #f5f6fa;
+            }
+            QProgressBar::chunk { background-color: #ff9966; border-radius: 8px; }
+            """)
+        self._set_status_bar_style("#1A2033", "#f5f6fa", "#ff9966")
+        if hasattr(self, "lcars_rail"):
+            self.lcars_rail.setStyleSheet(
+                "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+                "stop:0 #ff9966, stop:0.2 #ffcc99, stop:0.45 #cc99ff,"
+                "stop:0.7 #8899ff, stop:1 #ff8866);"
+                "border-radius: 14px; min-height: 22px;"
+            )
+            self.lcars_rail.setVisible(True)
+        self._apply_theme_specific_widget_styles()
+        self._apply_helper_text_styles()
+        self._apply_plot_theme()
+
+    def _apply_theme_specific_widget_styles(self) -> None:
+        run_style_light = "background: #0F766E; color: white; font-weight: 600; border: 1px solid #0F766E;"
+        run_style_dark = "background: #77FF64; color: #0D160B; font-weight: 700; border: 1px solid #77FF64;"
+        run_style_tng = "background: #ff9966; color: #15182A; font-weight: 800; border: 1px solid #ff9966; border-radius: 20px;"
+        stop_style_light = "background: #FFF5F5; color: #B42318; border: 1px solid #F1B4B0; font-weight: 600;"
+        stop_style_dark = "background: #2A1515; color: #FF9F96; border: 1px solid #6A2A2A; font-weight: 600;"
+        stop_style_tng = "background: #cc4444; color: #f5f6fa; border: 1px solid #ff9966; font-weight: 700; border-radius: 20px;"
+
+        if self.current_theme == "dark":
+            run_style = run_style_dark
+            stop_style = stop_style_dark
+        elif self.current_theme == "tng":
+            run_style = run_style_tng
+            stop_style = stop_style_tng
+        else:
+            run_style = run_style_light
+            stop_style = stop_style_light
+
+        if hasattr(self, "run_experiment_btn"):
+            self.run_experiment_btn.setStyleSheet(run_style)
+        if hasattr(self, "run_fit_btn"):
+            self.run_fit_btn.setStyleSheet(run_style)
+        if hasattr(self, "stop_experiment_btn"):
+            self.stop_experiment_btn.setStyleSheet(stop_style)
+
+    def _apply_helper_text_styles(self) -> None:
+        if self.current_theme == "dark":
+            helper_color = self.dark_accent_soft
+            info_background = "#1A1A1A"
+            info_border = "#3A321C"
+        elif self.current_theme == "tng":
+            helper_color = "#ffcc99"
+            info_background = "#1B2338"
+            info_border = "#ff9966"
+        else:
+            helper_color = "#5B7777"
+            info_background = "#F3FAFA"
+            info_border = "#D7E3E3"
+
+        if hasattr(self, "config_header"):
+            self.config_header.setStyleSheet(f"color: {helper_color};")
+        if hasattr(self, "data_header"):
+            self.data_header.setStyleSheet(f"color: {helper_color};")
+        if hasattr(self, "fit_header"):
+            self.fit_header.setStyleSheet(f"color: {helper_color};")
+        if hasattr(self, "mode_help_label"):
+            self.mode_help_label.setStyleSheet(f"color: {helper_color}; padding-top: 4px;")
+        if hasattr(self, "data_stats_label"):
+            self.data_stats_label.setStyleSheet(
+                f"color: {helper_color}; padding: 8px; background: {info_background}; "
+                f"border: 1px solid {info_border}; border-radius: 6px;"
+            )
+        if hasattr(self, "fit_data_label"):
+            self.fit_data_label.setStyleSheet(
+                f"color: {helper_color}; padding: 8px; background: {info_background}; "
+                f"border: 1px solid {info_border}; border-radius: 6px;"
+            )
+        if hasattr(self, "legend_labels"):
+            for legend_label in self.legend_labels:
+                legend_label.setStyleSheet(f"color: {helper_color};")
+
+    def _apply_plot_theme(self) -> None:
+        if not hasattr(self, "data_figure") or not hasattr(self, "fit_figure"):
+            return
+
+        for fig, axes in [(self.data_figure, self.data_axes), (self.fit_figure, self.fit_axes)]:
+            self._style_plot_axes(fig, axes)
+
+        self.data_canvas.draw_idle()
+        self.fit_canvas.draw_idle()
+
+    def _get_plot_style_tokens(self) -> dict[str, float | str | bool]:
+        return get_plot_style_tokens(self.current_theme)
+
+    def _style_plot_axes(self, fig: Figure, axes) -> None:
+        style_plot_axes(fig, axes, self._get_plot_style_tokens())
+
+    def _annotate_series(self, axes, x_data: np.ndarray, y_data: np.ndarray, prefix: str) -> None:
+        annotate_series(axes, x_data, y_data, prefix, self._get_plot_style_tokens())
+
+    def _redraw_active_plots(self) -> None:
+        if self.zscan_data is not None:
+            self.update_zscan_plot()
+        else:
+            self.update_preview_plot()
+
+        if self.fit_results is not None:
+            residuals = self.fit_results.get("residuals")
+            if residuals is not None:
+                mode = self.fitting_mode_combo.currentText()
+                if mode == "Current Data" and self.zscan_data is not None:
+                    x_data = self.zscan_data["z(mm)"]
+                    y_data = normalize_transmission(self.zscan_data["ai1/ai0"])
+                elif mode == "Single File":
+                    x_data = self.fit_input_data["z(mm)"]
+                    y_data = normalize_transmission(self.fit_input_data["ai1"] / self.fit_input_data["ai0"])
+                else:
+                    x_data = self.fit_input_x
+                    y_data = self.fit_input_y
+                self.fit_axes.clear()
+                self._plot_fit_result(x_data, y_data, residuals)
+
+    def on_theme_changed(self, theme_name: str) -> None:
+        if theme_name == "Dark Laser":
+            self.apply_dark_laser_theme()
+            self._redraw_active_plots()
+            self.show_status_message("Theme set to Dark Laser.")
+            return
+
+        if theme_name == "TNG LCARS":
+            self.apply_tng_theme()
+            self._redraw_active_plots()
+            self.show_status_message("Theme set to TNG LCARS.")
+            return
+
+        self.apply_light_scientific_theme()
+        self._redraw_active_plots()
+        self.show_status_message("Theme set to Light Scientific.")
 
     def setup_ui(self) -> None:
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+
+        top_bar = QHBoxLayout()
+        self.lcars_rail = QWidget()
+        self.lcars_rail.setVisible(False)
+        main_layout.addWidget(self.lcars_rail)
+        top_bar.addStretch()
+        top_bar.addWidget(QLabel("Theme:"))
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Light Scientific", "Dark Laser", "TNG LCARS"])
+        self.theme_combo.currentTextChanged.connect(self.on_theme_changed)
+        top_bar.addWidget(self.theme_combo)
+        main_layout.addLayout(top_bar)
 
         self.tab_widget = QTabWidget()
 
@@ -225,323 +463,21 @@ class GUI(QMainWindow):
         main_layout.addWidget(self.tab_widget)
 
     def create_configuration_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        laser_group = QGroupBox("Laser Parameters")
-        laser_layout = QGridLayout()
-
-        self.laser_inputs: dict[str, QLineEdit] = {}
-        laser_labels = {
-            "lambda_laser": "Lambda Laser:",
-            "energy_pulse": "Energy Pulse:",
-            "pulse_width": "Pulse Width (s):",
-            "w_0": "w_0:",
-            "m_squared": "M Squared:",
-        }
-
-        row = 0
-        for key, label_text in laser_labels.items():
-            label = QLabel(label_text)
-            input_field = QLineEdit(self.laser_params[key])
-            self.laser_inputs[key] = input_field
-            laser_layout.addWidget(label, row, 0)
-            laser_layout.addWidget(input_field, row, 1)
-            row += 1
-
-        laser_group.setLayout(laser_layout)
-        layout.addWidget(laser_group)
-
-        sample_group = QGroupBox("Sample Parameters")
-        sample_layout = QGridLayout()
-
-        self.sample_inputs: dict[str, QLineEdit] = {}
-        sample_labels = {
-            "thickness": "Thickness (cm):",
-            "T_surf": "T_surf:",
-            "concentration": "Concentration (Molarity):",
-            "sig_g": "Sig_g:",
-            "mol_abs": "Mol_abs:",
-            "sig_s": "Sig_s:",
-            "sig_t": "Sig_t:",
-            "sig_s2": "Sig_s2:",
-            "sig_t2": "Sig_t2:",
-            "t_10": "t_10:",
-            "t_13": "t_13:",
-            "t_21": "t_21:",
-            "t_30": "t_30:",
-            "t_43": "t_43:",
-        }
-
-        row = 0
-        col = 0
-        for key, label_text in sample_labels.items():
-            label = QLabel(label_text)
-            input_field = QLineEdit(self.sample_params[key])
-            self.sample_inputs[key] = input_field
-            sample_layout.addWidget(label, row, col)
-            sample_layout.addWidget(input_field, row, col + 1)
-            row += 1
-            if row > 6:
-                row = 0
-                col += 2
-
-        sample_group.setLayout(sample_layout)
-        layout.addWidget(sample_group)
-
-        button_layout = QHBoxLayout()
-
-        export_btn = QPushButton("Export to TOML")
-        export_btn.clicked.connect(self.export_to_toml)
-
-        load_btn = QPushButton("Load from TOML")
-        load_btn.clicked.connect(self.load_from_toml)
-
-        clear_btn = QPushButton("Clear All")
-        clear_btn.clicked.connect(self.clear_all)
-
-        button_layout.addWidget(load_btn)
-        button_layout.addWidget(clear_btn)
-        button_layout.addWidget(export_btn)
-
-        layout.addLayout(button_layout)
-        layout.addStretch()
-
-        return tab
+        return build_configuration_tab(self)
 
     def create_data_collection_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        # Experiment Parameters Group
-        params_group = QGroupBox("Experiment Parameters")
-        params_layout = QGridLayout()
-
-        self.zlim_input = QLineEdit("20.0")
-        self.zsamp_input = QLineEdit("101")
-
-        self.spacing_combo = QComboBox()
-        self.spacing_combo.addItems(["Linear", "Power Law"])
-        self.spacing_combo.currentTextChanged.connect(self.update_preview_plot)
-
-        params_layout.addWidget(QLabel("zlim (mm):"), 0, 0)
-        params_layout.addWidget(self.zlim_input, 0, 1)
-        params_layout.addWidget(QLabel("zsamp:"), 0, 2)
-        params_layout.addWidget(self.zsamp_input, 0, 3)
-        params_layout.addWidget(QLabel("Spacing:"), 0, 4)
-        params_layout.addWidget(self.spacing_combo, 0, 5)
-
-        self.zlim_input.textChanged.connect(self.update_preview_plot)
-        self.zsamp_input.textChanged.connect(self.update_preview_plot)
-
-        params_group.setLayout(params_layout)
-        layout.addWidget(params_group)
-
-        splitter = QSplitter(Qt.Vertical)
-
-        plot_group = QGroupBox("Z-Scan Data Plot (Preview: y = -x²)")
-        plot_layout = QVBoxLayout(plot_group)
-
-        self.data_figure = Figure(figsize=(8, 5), dpi=100)
-        self.data_canvas = FigureCanvas(self.data_figure)
-        self.data_axes = self.data_figure.add_subplot(111)
-
-        self.data_toolbar = NavigationToolbar(self.data_canvas, tab)
-
-        self.data_axes.set_xlabel("z (mm)", fontsize=11)
-        self.data_axes.set_ylabel("ai1/ai0", fontsize=11)
-        self.data_axes.set_title("Z-Scan Measurement Preview", fontsize=12, fontweight="bold")
-        self.data_axes.grid(True, alpha=0.3)
-
-        plot_layout.addWidget(self.data_toolbar)
-        plot_layout.addWidget(self.data_canvas)
-
-        self.data_stats_label = QLabel("Enter parameters and click Preview, or run experiment")
-        self.data_stats_label.setStyleSheet("color: #666; padding: 5px;")
-        plot_layout.addWidget(self.data_stats_label)
-
-        splitter.addWidget(plot_group)
-
-        table_group = QGroupBox("Data Table")
-        table_layout = QVBoxLayout(table_group)
-
-        self.data_table = QTableWidget()
-        self.data_table.setColumnCount(4)
-        self.data_table.setHorizontalHeaderLabels(["z (mm)", "ai0", "ai1", "ai1/ai0"])
-        self.data_table.horizontalHeader().setStretchLastSection(True)
-        self.data_table.setAlternatingRowColors(True)
-
-        table_layout.addWidget(self.data_table)
-        splitter.addWidget(table_group)
-
-        splitter.setSizes([700, 300])
-        layout.addWidget(splitter)
-
-        button_layout = QHBoxLayout()
-
-        self.preview_btn = QPushButton("Preview")
-        self.preview_btn.clicked.connect(self.update_preview_plot)
-
-        self.run_experiment_btn = QPushButton("Run Experiment")
-        self.run_experiment_btn.clicked.connect(self.run_experiment)
-        self.run_experiment_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                padding: 8px 16px;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-            }
-        """)
-
-        self.stop_experiment_btn = QPushButton("Stop Experiment")
-        self.stop_experiment_btn.clicked.connect(self.stop_experiment)
-        self.stop_experiment_btn.setEnabled(False)
-        self.stop_experiment_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
-                padding: 8px 16px;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-            }
-        """)
-
-        self.save_data_btn = QPushButton("Save Data")
-        self.save_data_btn.clicked.connect(self.save_zscan_data)
-        self.save_data_btn.setEnabled(False)
-
-        self.clear_data_btn = QPushButton("Clear Data")
-        self.clear_data_btn.clicked.connect(self.clear_zscan_data)
-        self.clear_data_btn.setEnabled(False)
-
-        button_layout.addWidget(self.preview_btn)
-        button_layout.addWidget(self.run_experiment_btn)
-        button_layout.addWidget(self.stop_experiment_btn)
-        button_layout.addWidget(self.save_data_btn)
-        button_layout.addWidget(self.clear_data_btn)
-        button_layout.addStretch()
-
-        layout.addLayout(button_layout)
-
-        self.experiment_progress = QProgressBar()
-        self.experiment_progress.setVisible(False)
-        layout.addWidget(self.experiment_progress)
-
-        # Initial preview plot
-        self.update_preview_plot()
-
-        return tab
+        return build_data_collection_tab(self)
 
     def create_fitting_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        fit_params_group = QGroupBox("Fitting Parameters")
-        fit_params_layout = QGridLayout()
-
-        self.fitting_inputs: dict[str, QLineEdit] = {}
-        fit_labels = {
-            "t_slices": "t_slices:",
-            "z_slices": "z_slices:",
-            "num_starts": "num_starts:",
-        }
-
-        defaults = {"t_slices": "11", "z_slices": "11", "num_starts": "5"}
-
-        row = 0
-        for key, label_text in fit_labels.items():
-            label = QLabel(label_text)
-            input_field = QLineEdit(defaults[key])
-            self.fitting_inputs[key] = input_field
-            fit_params_layout.addWidget(label, row, 0)
-            fit_params_layout.addWidget(input_field, row, 1)
-            row += 1
-
-        fit_params_group.setLayout(fit_params_layout)
-        layout.addWidget(fit_params_group)
-
-        mode_group = QGroupBox("Fitting Mode")
-        mode_layout = QVBoxLayout(mode_group)
-
-        self.fitting_mode_combo = QComboBox()
-        self.fitting_mode_combo.addItems(["Current Data", "Single File", "Multiple Files"])
-        self.fitting_mode_combo.currentTextChanged.connect(self.on_fitting_mode_changed)
-        mode_layout.addWidget(self.fitting_mode_combo)
-
-        self.load_file_btn = QPushButton("Load File(s)")
-        self.load_file_btn.clicked.connect(self.load_fit_files)
-        self.load_file_btn.setEnabled(False)
-        mode_layout.addWidget(self.load_file_btn)
-
-        layout.addWidget(mode_group)
-
-        self.fit_data_label = QLabel("No data loaded for fitting")
-        self.fit_data_label.setStyleSheet("color: #666; padding: 5px;")
-        layout.addWidget(self.fit_data_label)
-
-        self.run_fit_btn = QPushButton("Run Fit")
-        self.run_fit_btn.clicked.connect(self.run_fit)
-        self.run_fit_btn.setEnabled(False)
-        self.run_fit_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                padding: 8px 16px;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-            }
-        """)
-        layout.addWidget(self.run_fit_btn)
-
-        self.fit_progress = QProgressBar()
-        self.fit_progress.setVisible(False)
-        layout.addWidget(self.fit_progress)
-
-        results_group = QGroupBox("Fit Results")
-        results_layout = QVBoxLayout(results_group)
-
-        self.fit_figure = Figure(figsize=(8, 5), dpi=100)
-        self.fit_canvas = FigureCanvas(self.fit_figure)
-        self.fit_axes = self.fit_figure.add_subplot(111)
-
-        self.fit_toolbar = NavigationToolbar(self.fit_canvas, tab)
-
-        results_layout.addWidget(self.fit_toolbar)
-        results_layout.addWidget(self.fit_canvas)
-
-        layout.addWidget(results_group)
-
-        self.results_table = QTableWidget()
-        self.results_table.setColumnCount(2)
-        self.results_table.setHorizontalHeaderLabels(["Parameter", "Value"])
-        layout.addWidget(self.results_table)
-
-        return tab
+        return build_fitting_tab(self)
 
     def on_fitting_mode_changed(self, mode: str) -> None:
         if mode in ["Single File", "Multiple Files"]:
             self.load_file_btn.setEnabled(True)
         else:
             self.load_file_btn.setEnabled(False)
+
+        self.mode_help_label.setText(FITTING_MODE_HELP.get(mode, ""))
 
     def load_fit_files(self) -> None:
         mode = self.fitting_mode_combo.currentText()
@@ -559,6 +495,7 @@ class GUI(QMainWindow):
                         self.fit_config = toml.load(f)
                     self.fit_data_label.setText(f"Loaded: {files} ({self.fit_num_x_pts} points)")
                     self.run_fit_btn.setEnabled(True)
+                    self.show_status_message("Single-file fit data loaded.")
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to load file: {e}")
 
@@ -633,6 +570,7 @@ class GUI(QMainWindow):
                     self.fit_num_x_pts = ref_num_x_pts  # Store validated num_x_pts
                     self.fit_data_label.setText(f"Loaded {len(files)} files ({ref_num_x_pts} points each)")
                     self.run_fit_btn.setEnabled(True)
+                    self.show_status_message(f"Loaded {len(files)} datasets for multi-file fit.")
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to load files: {e}")
 
@@ -654,6 +592,7 @@ class GUI(QMainWindow):
             self.experiment_progress.setValue(0)
 
             self.experiment_worker.start()
+            self.show_status_message("Experiment started.")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start experiment: {e}")
@@ -666,6 +605,7 @@ class GUI(QMainWindow):
         self.run_experiment_btn.setEnabled(True)
         self.stop_experiment_btn.setEnabled(False)
         self.experiment_progress.setVisible(False)
+        self.show_status_message("Experiment stopped.")
 
     def on_experiment_progress(self, value: int) -> None:
         self.experiment_progress.setValue(value)
@@ -683,12 +623,15 @@ class GUI(QMainWindow):
         self.run_experiment_btn.setEnabled(True)
         self.stop_experiment_btn.setEnabled(False)
         self.experiment_progress.setVisible(False)
+        self.data_stats_label.setText("Measured data loaded. You can now save data or move to Fitting.")
+        self.show_status_message("Experiment complete. Data ready.")
 
     def on_experiment_error(self, error: str) -> None:
         QMessageBox.critical(self, "Experiment Error", error)
         self.run_experiment_btn.setEnabled(True)
         self.stop_experiment_btn.setEnabled(False)
         self.experiment_progress.setVisible(False)
+        self.show_status_message("Experiment failed.")
 
     def run_fit(self) -> None:
         mode = self.fitting_mode_combo.currentText()
@@ -755,6 +698,7 @@ class GUI(QMainWindow):
             self.fit_progress.setValue(0)
 
             self.fit_worker.start()
+            self.show_status_message("Fit started.")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to run fit: {e}")
@@ -787,24 +731,21 @@ class GUI(QMainWindow):
                 normalized_y.append(normalize_transmission(dataset_y))
             y_data = np.concatenate(normalized_y)
 
-        y_fitted = y_data - residuals
-
         self.fit_axes.clear()
-        self.fit_axes.plot(x_data, y_data, "bo", markersize=6, label="Data")
-        self.fit_axes.plot(x_data, y_fitted, "r-", linewidth=2, label="Fit")
-        self.fit_axes.set_xlabel("z (mm)", fontsize=11)
-        self.fit_axes.set_ylabel("ai1/ai0", fontsize=11)
-        self.fit_axes.set_title("Z-Scan Fit", fontsize=12, fontweight="bold")
-        self.fit_axes.grid(True, alpha=0.3)
-        self.fit_axes.legend()
-        self.fit_figure.tight_layout()
-        self.fit_canvas.draw()
+        self._plot_fit_result(x_data, y_data, residuals)
 
         self.results_table.setRowCount(len(fit_params) if fit_params is not None else 0)
         if fit_params is not None:
             for i, val in enumerate(fit_params):
-                self.results_table.setItem(i, 0, QTableWidgetItem(f"Param {i}"))
-                self.results_table.setItem(i, 1, QTableWidgetItem(str(val)))
+                label = self._fit_param_labels[i] if i < len(self._fit_param_labels) else f"Param {i}"
+                label_widget = QLabel(label)
+                label_widget.setTextFormat(Qt.RichText)
+                label_widget.setStyleSheet("padding-left: 4px;")
+                self.results_table.setCellWidget(i, 0, label_widget)
+                value_text = f"{float(val):.6e}" if isinstance(val, (int, float, np.floating)) else str(val)
+                value_item = QTableWidgetItem(value_text)
+                value_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.results_table.setItem(i, 1, value_item)
 
         self.fit_results = {
             "residuals": residuals,
@@ -814,11 +755,51 @@ class GUI(QMainWindow):
 
         self.run_fit_btn.setEnabled(True)
         self.fit_progress.setVisible(False)
+        self.copy_results_btn.setEnabled(True)
+        self.export_results_btn.setEnabled(True)
+        fit_params_section = self.sections.get("fit_params")
+        if fit_params_section is not None and hasattr(fit_params_section, "set_collapsed"):
+            fit_params_section.set_collapsed(False)
+            self.set_section_collapsed("fit_params", False)
+        self.fit_data_label.setText("Fit complete. Review parameters and copy/export results.")
+        self.show_status_message("Fit complete.")
+
+    def _plot_fit_result(self, x_data: np.ndarray, y_data: np.ndarray, residuals: np.ndarray) -> None:
+        tokens = self._get_plot_style_tokens()
+        y_fitted = y_data - residuals
+
+        self.fit_axes.plot(
+            x_data,
+            y_data,
+            "o",
+            markersize=float(tokens["marker_size"]),
+            color=str(tokens["data_color"]),
+            alpha=0.9,
+            label="Data",
+        )
+        self.fit_axes.plot(
+            x_data,
+            y_fitted,
+            "-",
+            linewidth=float(tokens["fit_width"]),
+            color=str(tokens["fit_color"]),
+            label="Fit",
+        )
+        self.fit_axes.set_xlabel("z (mm)")
+        self.fit_axes.set_ylabel("ai1/ai0")
+        self.fit_axes.set_title("Z-Scan Fit", fontweight="bold")
+        self.fit_axes.margins(x=0.03, y=0.07)
+        self.fit_axes.legend(loc="best")
+        self._annotate_series(self.fit_axes, x_data, y_data, "Fit View")
+        self.fit_figure.tight_layout()
+        self._apply_plot_theme()
+        self.fit_canvas.draw()
 
     def on_fit_error(self, error: str) -> None:
         QMessageBox.critical(self, "Fit Error", error)
         self.run_fit_btn.setEnabled(True)
         self.fit_progress.setVisible(False)
+        self.show_status_message("Fit failed.")
 
     def load_zscan_data(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Z-Scan Data File", "", "CSV Files (*.csv);;All Files (*)")
@@ -838,6 +819,7 @@ class GUI(QMainWindow):
 
                 self.save_data_btn.setEnabled(True)
                 self.clear_data_btn.setEnabled(True)
+                self.show_status_message("CSV data loaded.")
 
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load data: {str(e)}")
@@ -855,18 +837,30 @@ class GUI(QMainWindow):
             width = 5.0
             y = 1 - depth / (1 + (z / width) ** 2)
 
+            tokens = self._get_plot_style_tokens()
+
             self.data_axes.clear()
-            self.data_axes.plot(z, y, "ro-", linewidth=1, markersize=4, label="Preview")
-            self.data_axes.set_xlabel("z (mm)", fontsize=11)
-            self.data_axes.set_ylabel("Transmission", fontsize=11)
+            self.data_axes.plot(
+                z,
+                y,
+                "o-",
+                linewidth=float(tokens["line_width"]),
+                markersize=float(tokens["preview_marker_size"]),
+                color=str(tokens["preview_color"]),
+                alpha=0.9,
+                label="Preview",
+            )
+            self.data_axes.set_xlabel("z (mm)")
+            self.data_axes.set_ylabel("Transmission")
             self.data_axes.set_title(
                 f"Z-Scan Measurement Preview ({spacing_type}, zlim={zlim}, zsamp={zsamp})",
-                fontsize=12,
                 fontweight="bold",
             )
-            self.data_axes.grid(True, alpha=0.3)
+            self.data_axes.margins(x=0.03, y=0.08)
             self.data_axes.legend()
+            self._annotate_series(self.data_axes, z, y, "Preview")
             self.data_figure.tight_layout()
+            self._apply_plot_theme()
             self.data_canvas.draw()
 
         except ValueError:
@@ -877,15 +871,28 @@ class GUI(QMainWindow):
         if self.zscan_data is not None:
             z = self.zscan_data["z(mm)"]
             ratio = self.zscan_data["ai1/ai0"]
+            tokens = self._get_plot_style_tokens()
 
             self.data_axes.clear()
-            self.data_axes.plot(z, ratio, "bo-", linewidth=2, markersize=6, label="Data")
-            self.data_axes.set_xlabel("z (mm)", fontsize=11)
-            self.data_axes.set_ylabel("ai1/ai0", fontsize=11)
-            self.data_axes.set_title("Z-Scan Measurement", fontsize=12, fontweight="bold")
-            self.data_axes.grid(True, alpha=0.3)
+            self.data_axes.plot(
+                z,
+                ratio,
+                "o-",
+                linewidth=float(tokens["line_width"]),
+                markersize=float(tokens["marker_size"]),
+                color=str(tokens["data_color"]),
+                alpha=0.92,
+                label="Data",
+            )
+            self.data_axes.axvline(0, linestyle="--", linewidth=1.0, color=str(tokens["grid_major"]), alpha=0.8)
+            self.data_axes.set_xlabel("z (mm)")
+            self.data_axes.set_ylabel("ai1/ai0")
+            self.data_axes.set_title("Z-Scan Measurement", fontweight="bold")
+            self.data_axes.margins(x=0.03, y=0.08)
             self.data_axes.legend()
+            self._annotate_series(self.data_axes, z, ratio, "Measured Data")
             self.data_figure.tight_layout()
+            self._apply_plot_theme()
             self.data_canvas.draw()
 
     def update_zscan_table(self) -> None:
@@ -898,10 +905,16 @@ class GUI(QMainWindow):
             ratio_data = self.zscan_data["ai1/ai0"]
 
             for i in range(len(z_data)):
-                self.data_table.setItem(i, 0, QTableWidgetItem(f"{z_data[i]:.2f}"))
-                self.data_table.setItem(i, 1, QTableWidgetItem(f"{ai0_data[i]:.4f}"))
-                self.data_table.setItem(i, 2, QTableWidgetItem(f"{ai1_data[i]:.4f}"))
-                self.data_table.setItem(i, 3, QTableWidgetItem(f"{ratio_data[i]:.6f}"))
+                z_item = QTableWidgetItem(f"{z_data[i]:.2f}")
+                ai0_item = QTableWidgetItem(f"{ai0_data[i]:.4f}")
+                ai1_item = QTableWidgetItem(f"{ai1_data[i]:.4f}")
+                ratio_item = QTableWidgetItem(f"{ratio_data[i]:.6f}")
+                for item in (z_item, ai0_item, ai1_item, ratio_item):
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.data_table.setItem(i, 0, z_item)
+                self.data_table.setItem(i, 1, ai0_item)
+                self.data_table.setItem(i, 2, ai1_item)
+                self.data_table.setItem(i, 3, ratio_item)
 
     def update_zscan_stats(self) -> None:
         if self.zscan_data is not None:
@@ -951,6 +964,7 @@ class GUI(QMainWindow):
                     )
                     self.data_stats_label.setText("Data exported successfully")
                     self.data_stats_label.setStyleSheet("color: #2E7D32; padding: 5px;")
+                    self.show_status_message("Data exported successfully.")
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to export data: {str(e)}")
                     self.data_stats_label.setText(f"Error exporting data: {str(e)}")
@@ -959,10 +973,10 @@ class GUI(QMainWindow):
     def clear_zscan_data(self) -> None:
         self.zscan_data = None
         self.data_axes.clear()
-        self.data_axes.set_xlabel("z (mm)", fontsize=11)
-        self.data_axes.set_ylabel("ai1/ai0", fontsize=11)
-        self.data_axes.set_title("Z-Scan Measurement", fontsize=12, fontweight="bold")
-        self.data_axes.grid(True, alpha=0.3)
+        self.data_axes.set_xlabel("z (mm)")
+        self.data_axes.set_ylabel("ai1/ai0")
+        self.data_axes.set_title("Z-Scan Measurement", fontweight="bold")
+        self._apply_plot_theme()
         self.data_canvas.draw()
 
         self.data_table.setRowCount(0)
@@ -971,6 +985,51 @@ class GUI(QMainWindow):
 
         self.save_data_btn.setEnabled(False)
         self.clear_data_btn.setEnabled(False)
+
+    def copy_fit_results(self) -> None:
+        if self.fit_results is None:
+            return
+
+        fit_params = self.fit_results.get("fit_params")
+        if fit_params is None:
+            return
+
+        lines = []
+        for i, val in enumerate(fit_params):
+            label = self._fit_param_labels[i] if i < len(self._fit_param_labels) else f"Param {i}"
+            value_text = f"{float(val):.6e}" if isinstance(val, (int, float, np.floating)) else str(val)
+            lines.append(f"{self.plain_fit_label(label)}: {value_text}")
+
+        QApplication.clipboard().setText("\n".join(lines))
+        self.fit_data_label.setText("Fit results copied to clipboard.")
+        self.show_status_message("Fit results copied to clipboard.")
+
+    def export_fit_results(self) -> None:
+        if self.fit_results is None:
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Fit Results",
+            "fit_results.csv",
+            "CSV Files (*.csv)",
+        )
+        if not file_path:
+            return
+
+        fit_params = self.fit_results.get("fit_params")
+        if fit_params is None:
+            return
+
+        with open(file_path, "w") as f:
+            f.write("parameter,value\n")
+            for i, val in enumerate(fit_params):
+                label = self._fit_param_labels[i] if i < len(self._fit_param_labels) else f"Param {i}"
+                value_text = f"{float(val):.6e}" if isinstance(val, (int, float, np.floating)) else str(val)
+                f.write(f'"{self.plain_fit_label(label)}","{value_text}"\n')
+
+        self.fit_data_label.setText(f"Fit results exported to {file_path}")
+        self.show_status_message("Fit results exported.")
 
     def get_current_parameters(self) -> dict:
         """Collect current values from input fields"""
@@ -1002,6 +1061,7 @@ class GUI(QMainWindow):
                 with open(file_path, "w") as f:
                     toml.dump(params, f)
                 QMessageBox.information(self, "Success", f"Parameters saved to {file_path}")
+                self.show_status_message("Parameters exported to TOML.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
 
@@ -1025,6 +1085,7 @@ class GUI(QMainWindow):
                             self.sample_inputs[key].setText(str(value))
 
                 QMessageBox.information(self, "Success", f"Parameters loaded from {file_path}")
+                self.show_status_message("Parameters loaded from TOML.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}")
 

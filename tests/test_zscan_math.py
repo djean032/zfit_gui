@@ -1,7 +1,7 @@
 import numpy as np
 
-from zscan_studio.experiment import generate_z_positions
 from zscan_studio.fit import normalize_transmission
+from zscan_studio.math_utils import generate_z_positions
 
 
 def test_generate_z_positions_linear_is_symmetric() -> None:
@@ -13,6 +13,12 @@ def test_generate_z_positions_linear_is_symmetric() -> None:
 def test_generate_z_positions_power_law_keeps_range() -> None:
     z = generate_z_positions(20.0, 5, "Power Law")
     expected = np.array([-20.0, -5.0, 0.0, 5.0, 20.0])
+    np.testing.assert_allclose(z, expected)
+
+
+def test_generate_z_positions_unknown_spacing_defaults_to_linear() -> None:
+    z = generate_z_positions(20.0, 5, "Something Else")
+    expected = np.array([-20.0, -10.0, 0.0, 10.0, 20.0])
     np.testing.assert_allclose(z, expected)
 
 

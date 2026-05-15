@@ -70,12 +70,12 @@ def fit_data(
     w0 = float(config["laser"]["w_0"])
     M2 = float(config["laser"]["m_squared"])
     if num_datasets < 1:
-        return
+        raise ValueError("num_datasets must be at least 1")
     elif num_datasets == 1:
         pulse_energy = np.array([float(config["laser"]["energy_pulse"])])
     else:
         if pulse_energies is None:
-            return
+            raise ValueError("pulse_energies is required when fitting multiple datasets")
         pulse_energy = pulse_energies
 
     sig_g = float(config["sample"]["sig_g"])
@@ -88,7 +88,7 @@ def fit_data(
     t43 = float(config["sample"]["t_43"])
     spec_pars = np.array([sig_g, sig_s, sig_t, t10, t13, t21, t30, t43])
     if t_slices is None or z_slices is None:
-        return
+        raise ValueError("t_slices and z_slices are required")
 
     # Calculate num_x_pts from data - validate all datasets have same number of points
     total_points = len(x_data)
