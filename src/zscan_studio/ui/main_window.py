@@ -1,7 +1,6 @@
 import sys
 
 import numpy as np
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PySide6.QtCore import QRegularExpression, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QPixmap, QRegularExpressionValidator, QShortcut
@@ -32,7 +31,6 @@ from zscan_studio.services import (
     load_multi_fit_file_entry,
     load_parameters_toml,
     load_single_fit_file,
-    load_zscan_csv,
     prepare_fit_inputs,
     prepare_fit_plot_data,
     save_fit_results_csv,
@@ -59,21 +57,6 @@ def input_validation_sci() -> QRegularExpressionValidator:
     pattern = r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$"
     regex = QRegularExpression(pattern, QRegularExpression.CaseInsensitiveOption)
     return QRegularExpressionValidator(regex)
-
-
-class MplCanvas(FigureCanvas):
-    """Matplotlib canvas widget"""
-
-    def __init__(
-        self,
-        parent: QWidget | None = None,
-        width: float = 5,
-        height: float = 4,
-        dpi: int = 100,
-    ) -> None:
-        fig = Figure(figsize=(width, height), dpi=dpi)
-        self.axes = fig.add_subplot(111)
-        super().__init__(fig)
 
 
 class GUI(QMainWindow):
@@ -117,10 +100,6 @@ class GUI(QMainWindow):
         self._setup_shortcuts()
         self._setup_focus_behavior()
         self._setup_status_bar()
-
-        self.csv_file_path = None
-        self.auto_refresh_enabled = False
-        self.refresh_timer = QTimer()
 
         self.zscan_data: dict[str, np.ndarray] | None = None
         self.experiment_worker: ExperimentWorker | None = None
@@ -794,29 +773,6 @@ class GUI(QMainWindow):
         self.run_fit_btn.setEnabled(True)
         self.fit_progress.setVisible(False)
         self.show_status_message("Fit failed. Next: adjust inputs/settings and rerun.")
-
-    def load_zscan_data(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open Z-Scan Data File", "", "CSV Files (*.csv);;All Files (*)")
-
-        if file_path:
-            try:
-                self.zscan_data = load_zscan_csv(file_path)
-
-                self.update_zscan_plot()
-                self.update_zscan_table()
-                self.update_zscan_stats()
-
-                self.save_data_btn.setEnabled(True)
-                self.clear_data_btn.setEnabled(True)
-                self._refresh_fit_actions()
-                self.show_status_message("CSV data loaded. Next: inspect plot/table or run fitting.")
-
-            except Exception as e:
-                self._show_action_error(
-                    "Load Data", "Could not load Z-scan CSV data.", "Verify the CSV structure (z, ai0, ai1) and try again.", str(e)
-                )
-                self.data_stats_label.setText(f"Error loading data. Next: verify CSV format and retry. Details: {str(e)}")
-                self.data_stats_label.setStyleSheet("color: red; padding: 5px;")
 
     def update_preview_plot(self) -> None:
         try:

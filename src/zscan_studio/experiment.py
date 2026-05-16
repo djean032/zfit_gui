@@ -1,4 +1,3 @@
-import time
 from datetime import datetime
 from typing import Callable
 
@@ -89,27 +88,6 @@ class Experiment:
             continue
         return 0
 
-    def save_all_data(self, measurement_data: np.ndarray, name: str) -> None:
-        """Save all measurement data to a CSV file."""
-        np.savetxt(
-            name + ".csv",
-            measurement_data,
-            delimiter=",",
-            header="z(mm),ai0,ai1",
-        )
-
-    def save_norm_data(self, measurement_data: np.ndarray, name: str) -> None:
-        """Save normalized measurement data to a CSV file."""
-        norm_data = self.normalize(measurement_data)
-        np.savetxt(name + "_norm.csv", norm_data, delimiter=",", header="z(mm),ai1/ai0")
-
-    def normalize(self, measurement_data: np.ndarray) -> np.ndarray:
-        """Normalize the measurement data to calculate transmission."""
-        transmission = measurement_data[:, 2] / measurement_data[:, 1]
-        norm_factor = np.mean(transmission[0:10])
-        transmission /= norm_factor
-        return np.column_stack((measurement_data[:, 0], transmission))
-
     def validate_measurements(self, measurements: list) -> bool:
         """Validate that measurements are within expected range."""
         for value in measurements:
@@ -165,37 +143,3 @@ class Experiment:
     def _format_energy(self, energy: float) -> str:
         """Format energy value for filename."""
         return f"{energy:.0e}"
-
-    def move_test(self) -> None:
-        stage = ESP302()
-        z_axis = 3
-        start_z = -20
-        end_z = 20
-        step = 0.4
-
-        try:
-            stage.moveAbsolute(z_axis, start_z)
-            print(f"Moving to start position: {start_z} mm")
-            time.sleep(2)
-
-            current_z = start_z
-            while current_z <= end_z:
-                print(f"Moving to position: {current_z} mm")
-                stage.moveAbsolute(z_axis, current_z)
-                current_z += step
-                time.sleep(0.5)
-
-            print(f"Scan complete. Final position: {current_z} mm")
-
-        except Exception as e:
-            print(f"An error occurred: {e}")
-
-        stage.close()
-        print("Staged connection closed")
-
-
-if __name__ == "__main__":
-    exp = Experiment(zlim=20.0, zsamp=101, samp_per_pos=4)
-    exp.collect()
-    exp.save_all_data(exp.measurements, "experiment_data")
-    exp.save_norm_data(exp.measurements, "normalized_data")

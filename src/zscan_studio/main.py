@@ -1,6 +1,6 @@
-from zscan_studio.ui.main_window import GUI, MplCanvas, input_validation_sci, main
+from zscan_studio.ui.main_window import GUI, input_validation_sci, main
 
-__all__ = ["GUI", "MplCanvas", "input_validation_sci", "main"]
+__all__ = ["GUI", "input_validation_sci", "main"]
 
 
 if __name__ == "__main__":
