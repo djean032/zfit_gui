@@ -6,51 +6,21 @@ from matplotlib.ticker import AutoMinorLocator
 
 
 def get_plot_style_tokens(theme: str) -> dict[str, float | str | bool]:
-    if theme == "dark":
-        base: dict[str, float | str | bool] = {
-            "fig_bg": "#141414",
-            "axes_bg": "#1B1B1B",
-            "text_color": "#EEDFB5",
-            "grid_major": "#4B432B",
-            "grid_minor": "#352F1E",
-            "spine_color": "#7B6A3D",
-            "legend_bg": "#1B1B1B",
-            "data_color": "#8AC7FF",
-            "fit_color": "#FFD166",
-            "preview_color": "#9FEA8F",
-            "annotation_bg": "#1E1B14",
-            "annotation_edge": "#7B6A3D",
-        }
-    elif theme == "tng":
-        base = {
-            "fig_bg": "#0f1529",
-            "axes_bg": "#1B2338",
-            "text_color": "#f5f6fa",
-            "grid_major": "#666688",
-            "grid_minor": "#2A3550",
-            "spine_color": "#ff9966",
-            "legend_bg": "#161E32",
-            "data_color": "#8899ff",
-            "fit_color": "#ff9966",
-            "preview_color": "#cc55ff",
-            "annotation_bg": "#1C243A",
-            "annotation_edge": "#ff8866",
-        }
-    else:
-        base = {
-            "fig_bg": "#FFFFFF",
-            "axes_bg": "#FFFFFF",
-            "text_color": "#204848",
-            "grid_major": "#BFD4D4",
-            "grid_minor": "#E2EEEE",
-            "spine_color": "#A9C2C2",
-            "legend_bg": "#FFFFFF",
-            "data_color": "#1D6FA3",
-            "fit_color": "#C2410C",
-            "preview_color": "#6B7280",
-            "annotation_bg": "#F7FBFB",
-            "annotation_edge": "#A9C2C2",
-        }
+    _ = theme
+    base: dict[str, float | str | bool] = {
+        "fig_bg": "#141414",
+        "axes_bg": "#1B1B1B",
+        "text_color": "#EEDFB5",
+        "grid_major": "#4B432B",
+        "grid_minor": "#352F1E",
+        "spine_color": "#7B6A3D",
+        "legend_bg": "#1B1B1B",
+        "data_color": "#8AC7FF",
+        "fit_color": "#FFD166",
+        "preview_color": "#9FEA8F",
+        "annotation_bg": "#1E1B14",
+        "annotation_edge": "#7B6A3D",
+    }
 
     base.update(
         {
@@ -112,11 +82,7 @@ def annotate_series(
 
     min_idx = int(np.argmin(y_data))
     max_idx = int(np.argmax(y_data))
-    note = (
-        f"{prefix}\n"
-        f"min T: {y_data[min_idx]:.4f} @ z={x_data[min_idx]:.2f} mm\n"
-        f"max T: {y_data[max_idx]:.4f} @ z={x_data[max_idx]:.2f} mm"
-    )
+    note = f"{prefix}\nmin T: {y_data[min_idx]:.4f} @ z={x_data[min_idx]:.2f} mm\nmax T: {y_data[max_idx]:.4f} @ z={x_data[max_idx]:.2f} mm"
     axes.text(
         0.02,
         0.98,

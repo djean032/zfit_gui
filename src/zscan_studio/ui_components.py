@@ -21,6 +21,7 @@ class CollapsibleSection(QWidget):
         self._toggle.setCheckable(True)
         self._toggle.setChecked(not collapsed)
         self._toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._toggle.setStyleSheet("QToolButton:checked { color: #000000; }")
         self._toggle.clicked.connect(self._handle_toggle)
 
         layout = QVBoxLayout(self)
