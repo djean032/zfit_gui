@@ -48,6 +48,15 @@ uv run python app.py
 
 ## Development
 
+### Qt resources
+
+Splash/assets are bundled via Qt resources. If you change files referenced by
+`src/zscan_studio/resources.qrc`, regenerate the Python resource module:
+
+```bash
+uv run pyside6-rcc src/zscan_studio/resources.qrc -o src/zscan_studio/resources_rc.py
+```
+
 Run linting:
 
 ```bash
