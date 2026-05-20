@@ -74,3 +74,9 @@ Run tests:
 ```bash
 uv run pytest
 ```
+
+## Windows Packaging
+
+For PyInstaller + Inno Setup release steps, see `docs/packaging-windows.md`.
+
+For release process steps, see `docs/release-checklist.md`.
