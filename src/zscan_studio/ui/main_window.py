@@ -6,14 +6,19 @@ from PySide6.QtCore import QRegularExpression, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QPixmap, QRegularExpressionValidator, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QSplashScreen,
     QStatusBar,
     QTableWidgetItem,
     QTabWidget,
+    QToolBar,
     QVBoxLayout,
     QWidget,
 )
@@ -22,20 +27,26 @@ from zscan_studio import resources_rc
 from zscan_studio.fit import normalize_transmission
 from zscan_studio.plot_styles import annotate_series, get_plot_style_tokens, style_plot_axes
 from zscan_studio.services import (
+    DEFAULT_GLOBAL_SETTINGS,
     build_fit_result_rows,
     build_preview_curve,
     build_zscan_data,
     build_zscan_stats_text,
     build_zscan_table_rows,
     configs_match_ignoring_experiment,
+    load_global_settings,
     load_multi_fit_file_entry,
     load_parameters_toml,
     load_single_fit_file,
     prepare_fit_inputs,
     prepare_fit_plot_data,
     save_fit_results_csv,
+    save_global_settings,
     save_parameters_toml,
     save_zscan_with_metadata,
+)
+from zscan_studio.ui_builders import (
+    create_calibration_tab as build_calibration_tab,
 )
 from zscan_studio.ui_builders import (
     create_configuration_tab as build_configuration_tab,
@@ -50,7 +61,7 @@ from zscan_studio.ui_metadata import (
     FIT_PARAM_LABELS,
     FITTING_MODE_HELP,
 )
-from zscan_studio.workers import ExperimentWorker, FitWorker
+from zscan_studio.workers import CalibrationWorker, ExperimentWorker, FitWorker
 
 
 def input_validation_sci() -> QRegularExpressionValidator:
@@ -89,6 +100,7 @@ class GUI(QMainWindow):
             "t_30": "1.0e-7",
             "t_43": "1.0e-15",
         }
+        self.acquisition_params = dict(DEFAULT_GLOBAL_SETTINGS["acquisition"])
 
         self.fit_results: dict | None = None
         self.current_theme = "dark"
@@ -97,12 +109,17 @@ class GUI(QMainWindow):
         self.sections: dict[str, object] = {}
 
         self.setup_ui()
+        self._setup_toolbar()
         self._setup_shortcuts()
         self._setup_focus_behavior()
         self._setup_status_bar()
+        self._load_global_settings()
 
         self.zscan_data: dict[str, np.ndarray] | None = None
         self.experiment_worker: ExperimentWorker | None = None
+        self.calibration_worker: CalibrationWorker | None = None
+        self._calibration_live_mode: bool = False
+        self._calibration_live_plot_counter: int = 0
         self.fit_worker: FitWorker | None = None
         self._fit_param_labels = FIT_PARAM_LABELS.copy()
         self._sci_validator = input_validation_sci()
@@ -116,6 +133,130 @@ class GUI(QMainWindow):
         status = QStatusBar(self)
         self.setStatusBar(status)
         self.show_status_message("Ready. Next: configure parameters, then preview or run acquisition.")
+
+    def _setup_toolbar(self) -> None:
+        toolbar = QToolBar("Main", self)
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        settings_action = toolbar.addAction("Settings")
+        settings_action.setToolTip("Open global acquisition settings")
+        settings_action.triggered.connect(self.open_settings_dialog)
+
+    def _load_global_settings(self) -> None:
+        settings = load_global_settings()
+        acquisition = settings.get("acquisition", {}) if isinstance(settings, dict) else {}
+        if isinstance(acquisition, dict):
+            merged = dict(DEFAULT_GLOBAL_SETTINGS["acquisition"])
+            merged.update(acquisition)
+            self.acquisition_params = merged
+
+    def open_settings_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Global Settings")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+
+        pretrigger_input = QLineEdit(str(self.acquisition_params["pretrigger_samples"]))
+        posttrigger_input = QLineEdit(str(self.acquisition_params["posttrigger_samples"]))
+        rate_input = QLineEdit(str(self.acquisition_params["sample_rate_hz"]))
+        trigger_input = QLineEdit(str(self.acquisition_params["trigger_source"]))
+        windows_input = QLineEdit(str(self.acquisition_params["windows_per_position"]))
+        timeout_input = QLineEdit(str(self.acquisition_params["read_timeout_s"]))
+        retries_input = QLineEdit(str(self.acquisition_params["max_retries_per_window"]))
+
+        form.addRow("Pretrigger samples", pretrigger_input)
+        form.addRow("Posttrigger samples", posttrigger_input)
+        form.addRow("Sample rate (Hz)", rate_input)
+        form.addRow("Trigger source", trigger_input)
+        form.addRow("Windows per position", windows_input)
+        form.addRow("Read timeout (s)", timeout_input)
+        form.addRow("Max retries/window", retries_input)
+        layout.addLayout(form)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        reset_button = button_box.addButton("Reset Defaults", QDialogButtonBox.ButtonRole.ResetRole)
+        reset_button.clicked.connect(
+            lambda: self._populate_settings_inputs(
+                pretrigger_input,
+                posttrigger_input,
+                rate_input,
+                trigger_input,
+                windows_input,
+                timeout_input,
+                retries_input,
+                dict(DEFAULT_GLOBAL_SETTINGS["acquisition"]),
+            )
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            updated = {
+                "pretrigger_samples": self._parse_int(pretrigger_input.text(), minimum=0),
+                "posttrigger_samples": self._parse_int(posttrigger_input.text(), minimum=1),
+                "sample_rate_hz": self._parse_float(rate_input.text(), minimum=1.0),
+                "trigger_source": self._parse_str(trigger_input.text()),
+                "windows_per_position": self._parse_int(windows_input.text(), minimum=1),
+                "read_timeout_s": self._parse_float(timeout_input.text(), minimum=0.1),
+                "max_retries_per_window": self._parse_int(retries_input.text(), minimum=0),
+            }
+        except ValueError as error:
+            self._show_action_error(
+                "Settings",
+                "Invalid global acquisition settings.",
+                "Correct invalid values and save again.",
+                str(error),
+            )
+            return
+
+        self.acquisition_params = updated
+        save_global_settings({"acquisition": self.acquisition_params})
+        self.show_status_message("Global settings saved. Next: run acquisition with updated values.")
+
+    def _populate_settings_inputs(
+        self,
+        pretrigger_input: QLineEdit,
+        posttrigger_input: QLineEdit,
+        rate_input: QLineEdit,
+        trigger_input: QLineEdit,
+        windows_input: QLineEdit,
+        timeout_input: QLineEdit,
+        retries_input: QLineEdit,
+        values: dict,
+    ) -> None:
+        pretrigger_input.setText(str(values["pretrigger_samples"]))
+        posttrigger_input.setText(str(values["posttrigger_samples"]))
+        rate_input.setText(str(values["sample_rate_hz"]))
+        trigger_input.setText(str(values["trigger_source"]))
+        windows_input.setText(str(values["windows_per_position"]))
+        timeout_input.setText(str(values["read_timeout_s"]))
+        retries_input.setText(str(values["max_retries_per_window"]))
+
+    @staticmethod
+    def _parse_int(value: str, minimum: int) -> int:
+        parsed = int(value.strip())
+        if parsed < minimum:
+            raise ValueError(f"Expected integer >= {minimum}, got {parsed}.")
+        return parsed
+
+    @staticmethod
+    def _parse_float(value: str, minimum: float) -> float:
+        parsed = float(value.strip())
+        if parsed < minimum:
+            raise ValueError(f"Expected value >= {minimum}, got {parsed}.")
+        return parsed
+
+    @staticmethod
+    def _parse_str(value: str) -> str:
+        parsed = value.strip()
+        if not parsed:
+            raise ValueError("Trigger source cannot be empty.")
+        return parsed
 
     def _setup_shortcuts(self) -> None:
         self._shortcut_run_experiment = QShortcut(QKeySequence("Ctrl+R"), self)
@@ -363,10 +504,12 @@ class GUI(QMainWindow):
 
         self.config_tab = self.create_configuration_tab()
         self.data_tab = self.create_data_collection_tab()
+        self.calibration_tab = self.create_calibration_tab()
         self.fitting_tab = self.create_fitting_tab()
 
         self.tab_widget.addTab(self.config_tab, "Configuration")
         self.tab_widget.addTab(self.data_tab, "Data Collection")
+        self.tab_widget.addTab(self.calibration_tab, "Calibration")
         self.tab_widget.addTab(self.fitting_tab, "Fitting")
         main_layout.addWidget(self.tab_widget)
 
@@ -376,8 +519,273 @@ class GUI(QMainWindow):
     def create_data_collection_tab(self) -> QWidget:
         return build_data_collection_tab(self)
 
+    def create_calibration_tab(self) -> QWidget:
+        return build_calibration_tab(self)
+
     def create_fitting_tab(self) -> QWidget:
         return build_fitting_tab(self)
+
+    def move_calibration_polarizer_absolute(self) -> None:
+        try:
+            target = float(self.cal_polarizer_position_input.text())
+            from zscan_studio.esp302 import ESP302
+
+            stage = ESP302()
+            try:
+                stage.moveAbsolute(2, target)
+                while not stage.queryAtPosition(2, target):
+                    continue
+            finally:
+                stage.close()
+            self.cal_status_label.setText(f"Polarizer moved to {target:.4f} (axis 2). Next: run calibration read.")
+            self.show_status_message("Polarizer moved. Next: run calibration read.")
+        except Exception as e:
+            self._show_action_error(
+                "Move Polarizer",
+                "Could not move polarizer axis.",
+                "Check axis wiring/controller connection and retry.",
+                str(e),
+            )
+
+    def read_calibration_z_position(self) -> None:
+        try:
+            from zscan_studio.esp302 import ESP302
+
+            stage = ESP302()
+            try:
+                z_pos_text = stage.getPosition(3)
+            finally:
+                stage.close()
+
+            z_pos = float(z_pos_text)
+            self.cal_z_position_input.setText(f"{z_pos:.4f}")
+            self.cal_status_label.setText(f"Z position read: {z_pos:.4f} mm. Next: adjust Z or run calibration read.")
+            self.show_status_message("Read Z position from stage.")
+        except Exception as e:
+            self._show_action_error(
+                "Read Z Position",
+                "Could not read Z stage position.",
+                "Check ESP302 connection and retry.",
+                str(e),
+            )
+
+    def move_calibration_z_absolute(self) -> None:
+        try:
+            target = float(self.cal_z_position_input.text())
+            from zscan_studio.esp302 import ESP302
+
+            stage = ESP302()
+            try:
+                stage.moveAbsolute(3, target)
+                while not stage.queryAtPosition(3, target):
+                    continue
+            finally:
+                stage.close()
+
+            self.cal_status_label.setText(f"Z moved to {target:.4f} mm. Next: run calibration read or adjust again.")
+            self.show_status_message("Moved Z stage.")
+        except Exception as e:
+            self._show_action_error(
+                "Move Z Stage",
+                "Could not move Z stage.",
+                "Check position value and ESP302 connection, then retry.",
+                str(e),
+            )
+
+    def step_calibration_z_positive(self) -> None:
+        self._step_calibration_z(+1.0)
+
+    def step_calibration_z_negative(self) -> None:
+        self._step_calibration_z(-1.0)
+
+    def _step_calibration_z(self, direction: float) -> None:
+        try:
+            current = float(self.cal_z_position_input.text())
+            step = float(self.cal_z_step_input.text())
+            next_value = current + direction * step
+            self.cal_z_position_input.setText(f"{next_value:.4f}")
+            self.move_calibration_z_absolute()
+        except Exception as e:
+            self._show_action_error(
+                "Step Z Stage",
+                "Could not step Z stage.",
+                "Verify current position/step values and retry.",
+                str(e),
+            )
+
+    def step_calibration_polarizer_positive(self) -> None:
+        self._step_calibration_polarizer(+1.0)
+
+    def step_calibration_polarizer_negative(self) -> None:
+        self._step_calibration_polarizer(-1.0)
+
+    def _step_calibration_polarizer(self, direction: float) -> None:
+        try:
+            current = float(self.cal_polarizer_position_input.text())
+            step = float(self.cal_polarizer_step_input.text())
+            next_value = current + direction * step
+            self.cal_polarizer_position_input.setText(f"{next_value:.6f}")
+            self.move_calibration_polarizer_absolute()
+        except Exception as e:
+            self._show_action_error(
+                "Polarizer Step",
+                "Could not step polarizer axis.",
+                "Verify position/step values and retry.",
+                str(e),
+            )
+
+    def run_calibration_read(self) -> None:
+        self._calibration_live_mode = False
+        if hasattr(self, "cal_live_btn"):
+            self.cal_live_btn.setChecked(False)
+            self.cal_live_btn.setText("Start Live")
+        self._ensure_calibration_worker()
+        if self.calibration_worker is not None:
+            self.cal_read_btn.setEnabled(False)
+            self.cal_stop_btn.setEnabled(True)
+            self.cal_status_label.setText("Reading calibration windows...")
+            self.calibration_worker.request_read_once()
+
+    def start_calibration_live(self) -> None:
+        self._calibration_live_mode = bool(self.cal_live_btn.isChecked())
+        if self._calibration_live_mode:
+            self.cal_live_btn.setText("Stop Live")
+            self._ensure_calibration_worker()
+            self._calibration_live_plot_counter = 0
+            if self.calibration_worker is not None:
+                self.cal_read_btn.setEnabled(False)
+                self.cal_stop_btn.setEnabled(True)
+                self.cal_status_label.setText("Live mode running: reporting max(ai0), max(ai1) per window...")
+                self.calibration_worker.request_start_live()
+        else:
+            self.cal_live_btn.setText("Start Live")
+            self.stop_calibration_read()
+
+    def stop_calibration_read(self) -> None:
+        self._calibration_live_mode = False
+        if hasattr(self, "cal_live_btn"):
+            self.cal_live_btn.setChecked(False)
+            self.cal_live_btn.setText("Start Live")
+        if self.calibration_worker is not None and self.calibration_worker.isRunning():
+            self.calibration_worker.request_stop_live()
+        self.cal_read_btn.setEnabled(True)
+        self.cal_stop_btn.setEnabled(False)
+        self.cal_status_label.setText("Calibration stopped. Next: run a read or start live mode.")
+
+    def _ensure_calibration_worker(self) -> None:
+        try:
+            trigger_source = self.cal_trigger_input.text().strip()
+            ai0_channel = self.cal_ai0_input.text().strip()
+            ai1_channel = self.cal_ai1_input.text().strip()
+            polarizer_position = float(self.cal_polarizer_position_input.text())
+
+            if self.calibration_worker is not None and self.calibration_worker.isRunning():
+                self.calibration_worker.update_config(
+                    trigger_source=trigger_source,
+                    ai0_channel=ai0_channel,
+                    ai1_channel=ai1_channel,
+                    sample_rate_hz=float(self.acquisition_params["sample_rate_hz"]),
+                    pretrigger_samples=int(self.acquisition_params["pretrigger_samples"]),
+                    posttrigger_samples=int(self.acquisition_params["posttrigger_samples"]),
+                    read_timeout_s=float(self.acquisition_params["read_timeout_s"]),
+                    max_retries_per_window=int(self.acquisition_params["max_retries_per_window"]),
+                    polarizer_position=polarizer_position,
+                )
+                return
+
+            self.calibration_worker = CalibrationWorker(
+                trigger_source=trigger_source,
+                ai0_channel=ai0_channel,
+                ai1_channel=ai1_channel,
+                sample_rate_hz=float(self.acquisition_params["sample_rate_hz"]),
+                pretrigger_samples=int(self.acquisition_params["pretrigger_samples"]),
+                posttrigger_samples=int(self.acquisition_params["posttrigger_samples"]),
+                read_timeout_s=float(self.acquisition_params["read_timeout_s"]),
+                max_retries_per_window=int(self.acquisition_params["max_retries_per_window"]),
+                z_axis=3,
+                z_target=0.0,
+                polarizer_axis=2,
+                polarizer_position=polarizer_position,
+                live_interval_ms=200,
+            )
+            self.calibration_worker.finished.connect(self.on_calibration_finished)
+            self.calibration_worker.reading.connect(self.on_calibration_reading)
+            self.calibration_worker.error.connect(self.on_calibration_error)
+            self.calibration_worker.status.connect(self.on_calibration_status)
+            self.calibration_worker.start()
+            self.show_status_message("Calibration session started.")
+        except Exception as e:
+            self._show_action_error(
+                "Calibration Session",
+                "Calibration session could not be started.",
+                "Check trigger/channels and DAQ availability, then retry.",
+                str(e),
+            )
+
+    def on_calibration_finished(self, payload: dict) -> None:
+        ai0_trace = np.asarray(payload.get("ai0_trace", []), dtype=float)
+        ai1_trace = np.asarray(payload.get("ai1_trace", []), dtype=float)
+        ai0_avg_max = float(payload.get("ai0_avg_max", float("nan")))
+        ai1_avg_max = float(payload.get("ai1_avg_max", float("nan")))
+        self._update_calibration_plot(ai0_trace, ai1_trace, "Calibration Trace (average of 4 windows)")
+
+        self.cal_ai0_max_label.setText(f"ai0 avg max: {ai0_avg_max:.6f} V")
+        self.cal_ai1_max_label.setText(f"ai1 avg max: {ai1_avg_max:.6f} V")
+        self.cal_status_label.setText("Calibration read complete. Next: adjust ND filters/polarizer and read again.")
+        self.cal_read_btn.setEnabled(True)
+        self.cal_stop_btn.setEnabled(False)
+        self._calibration_live_mode = False
+        if hasattr(self, "cal_live_btn"):
+            self.cal_live_btn.setChecked(False)
+            self.cal_live_btn.setText("Start Live")
+        self.show_status_message("Calibration read complete.")
+
+    def on_calibration_reading(self, payload: dict) -> None:
+        self._calibration_live_plot_counter += 1
+        ai0_trace = np.asarray(payload.get("ai0_trace", []), dtype=float)
+        ai1_trace = np.asarray(payload.get("ai1_trace", []), dtype=float)
+        ai0_avg_max = float(payload.get("ai0_avg_max", float("nan")))
+        ai1_avg_max = float(payload.get("ai1_avg_max", float("nan")))
+        if self._calibration_live_plot_counter % 3 == 0:
+            self._update_calibration_plot(ai0_trace, ai1_trace, "Calibration Trace (live window)")
+        self.cal_ai0_max_label.setText(f"ai0 max: {ai0_avg_max:.6f} V")
+        self.cal_ai1_max_label.setText(f"ai1 max: {ai1_avg_max:.6f} V")
+        self.cal_status_label.setText(f"Live: ai0 max={ai0_avg_max:.6f} V, ai1 max={ai1_avg_max:.6f} V")
+
+    def on_calibration_error(self, error: str) -> None:
+        self.cal_read_btn.setEnabled(True)
+        self.cal_stop_btn.setEnabled(False)
+        if error == "Calibration read stopped.":
+            self.cal_status_label.setText("Calibration stopped.")
+            self.show_status_message("Calibration stopped.")
+            return
+
+        self._calibration_live_mode = False
+        if hasattr(self, "cal_live_btn"):
+            self.cal_live_btn.setChecked(False)
+            self.cal_live_btn.setText("Start Live")
+        self.cal_status_label.setText("Calibration failed. Check settings/hardware and retry.")
+        self._show_action_error(
+            "Calibration Error",
+            "Calibration acquisition stopped due to a hardware or runtime issue.",
+            "Check trigger, DAQ channels, and stage connection, then retry.",
+            error,
+        )
+
+    def on_calibration_status(self, message: str) -> None:
+        self.cal_status_label.setText(message)
+        self.show_status_message(message)
+
+    def _update_calibration_plot(self, ai0_trace: np.ndarray, ai1_trace: np.ndarray, title: str) -> None:
+        self.cal_axes.clear()
+        self.cal_axes.plot(ai0_trace, label="ai0", linewidth=1.5)
+        self.cal_axes.plot(ai1_trace, label="ai1", linewidth=1.5)
+        self.cal_axes.set_xlabel("Sample index")
+        self.cal_axes.set_ylabel("Voltage (V)")
+        self.cal_axes.set_title(title)
+        self.cal_axes.grid(True, alpha=0.3)
+        self.cal_axes.legend(loc="best")
+        self.cal_canvas.draw_idle()
 
     def on_fitting_mode_changed(self, mode: str) -> None:
         if mode in ["Single File", "Multiple Files"]:
@@ -575,11 +983,29 @@ class GUI(QMainWindow):
     def run_experiment(self) -> None:
         try:
             config = self.get_current_parameters()
+            runtime_config = dict(config)
+            runtime_config["acquisition"] = dict(self.acquisition_params)
             zlim = float(self.zlim_input.text())
             zsamp = int(self.zsamp_input.text())
             spacing_type = self.spacing_combo.currentText()
 
-            self.experiment_worker = ExperimentWorker(config, zlim, zsamp, spacing_type)
+            acquisition = runtime_config.get("acquisition", {}) if isinstance(runtime_config, dict) else {}
+            windows_per_position = 4
+            if isinstance(acquisition, dict):
+                try:
+                    windows_per_position = int(acquisition.get("windows_per_position", windows_per_position))
+                except (TypeError, ValueError):
+                    windows_per_position = 4
+            if windows_per_position < 1:
+                windows_per_position = 4
+
+            self.experiment_worker = ExperimentWorker(
+                runtime_config,
+                zlim,
+                zsamp,
+                spacing_type,
+                windows_per_position,
+            )
             self.experiment_worker.progress.connect(self.on_experiment_progress)
             self.experiment_worker.finished.connect(self.on_experiment_finished)
             self.experiment_worker.error.connect(self.on_experiment_error)

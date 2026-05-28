@@ -19,6 +19,11 @@ from zscan_studio.services.io_service import (
     save_parameters_toml,
     save_zscan_with_metadata,
 )
+from zscan_studio.services.settings_service import (
+    DEFAULT_GLOBAL_SETTINGS,
+    load_global_settings,
+    save_global_settings,
+)
 
 __all__ = [
     "build_preview_curve",
@@ -36,4 +41,7 @@ __all__ = [
     "configs_match_ignoring_experiment",
     "load_multi_fit_file_entry",
     "load_single_fit_file",
+    "DEFAULT_GLOBAL_SETTINGS",
+    "load_global_settings",
+    "save_global_settings",
 ]

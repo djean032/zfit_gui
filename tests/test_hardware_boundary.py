@@ -2,7 +2,7 @@ import importlib
 
 import numpy as np
 
-from zscan_studio.workers import ExperimentWorker
+from zscan_studio.workers import CalibrationWorker, ExperimentWorker
 
 
 def test_non_hardware_modules_importable() -> None:
@@ -76,3 +76,38 @@ def test_experiment_worker_finished_signal_on_success(monkeypatch) -> None:
     assert payloads[0].shape == (1, 3)
 
     monkeypatch.setattr(experiment_module.Experiment, "collect", original_collect)
+
+
+def test_calibration_worker_reports_missing_nidaqmx(monkeypatch) -> None:
+    import builtins
+
+    original_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "nidaqmx":
+            raise ModuleNotFoundError("No module named 'nidaqmx'", name="nidaqmx")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    worker = CalibrationWorker(
+        trigger_source="/Dev1/PFI0",
+        ai0_channel="Dev1/ai0",
+        ai1_channel="Dev1/ai1",
+        sample_rate_hz=1_000_000.0,
+        pretrigger_samples=0,
+        posttrigger_samples=140,
+        read_timeout_s=5.0,
+        max_retries_per_window=4,
+        z_axis=3,
+        z_target=0.0,
+        polarizer_axis=2,
+        polarizer_position=0.0,
+    )
+    errors: list[str] = []
+    worker.error.connect(errors.append)
+
+    worker.run()
+
+    assert errors
+    assert "NI-DAQ library not found" in errors[0]

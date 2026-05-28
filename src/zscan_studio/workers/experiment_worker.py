@@ -34,6 +34,7 @@ class ExperimentWorker(QThread):
                 self.samp_per_pos,
                 self.spacing_type,
             )
+            self._apply_acquisition_config()
 
             def progress_callback(value: int) -> None:
                 self.progress.emit(value)
@@ -54,3 +55,50 @@ class ExperimentWorker(QThread):
             self.error.emit(f"Hardware communication failed during acquisition. Check NI-DAQ/stage availability and retry. Details: {e}")
         except Exception as e:
             self.error.emit(str(e))
+
+    def _apply_acquisition_config(self) -> None:
+        if self.exp is None:
+            return
+
+        acquisition = self.config.get("acquisition", {}) if isinstance(self.config, dict) else {}
+        if not isinstance(acquisition, dict):
+            return
+
+        self.exp.pretrigger_samples = self._int_or_default(acquisition.get("pretrigger_samples"), self.exp.pretrigger_samples, minimum=0)
+        self.exp.posttrigger_samples = self._int_or_default(acquisition.get("posttrigger_samples"), self.exp.posttrigger_samples, minimum=1)
+        self.exp.sample_rate_hz = self._float_or_default(acquisition.get("sample_rate_hz"), self.exp.sample_rate_hz, minimum=1.0)
+        self.exp.trigger_source = self._str_or_default(acquisition.get("trigger_source"), self.exp.trigger_source)
+        self.exp.windows_per_position = self._int_or_default(
+            acquisition.get("windows_per_position"),
+            self.exp.windows_per_position,
+            minimum=1,
+        )
+        self.exp.read_timeout_s = self._float_or_default(acquisition.get("read_timeout_s"), self.exp.read_timeout_s, minimum=0.1)
+        self.exp.max_retries_per_window = self._int_or_default(
+            acquisition.get("max_retries_per_window"),
+            self.exp.max_retries_per_window,
+            minimum=0,
+        )
+
+    @staticmethod
+    def _int_or_default(value: object, default: int, minimum: int) -> int:
+        try:
+            parsed = int(value) if value is not None else default
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed >= minimum else default
+
+    @staticmethod
+    def _float_or_default(value: object, default: float, minimum: float) -> float:
+        try:
+            parsed = float(value) if value is not None else default
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed >= minimum else default
+
+    @staticmethod
+    def _str_or_default(value: object, default: str) -> str:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped if stripped else default
+        return default
