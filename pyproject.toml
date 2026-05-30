@@ -11,7 +11,7 @@ dependencies = [
     "scipy>=1.13",
     "tomli>=2.0.1; python_version < '3.11'",
     "toml>=0.10.2",
-    "zscan-fit>=0.1.10",
+    "zscan-fit>=0.1.11",
 ]
 
 [project.optional-dependencies]
